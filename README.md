@@ -1,5 +1,7 @@
 # tmux-history-finder
 
+[![shellcheck](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml)
+
 Search the **visible text and scrollback history of every tmux pane** from a
 single fuzzy finder, then jump to, copy, send, or print the match.
 
