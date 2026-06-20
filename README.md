@@ -97,7 +97,8 @@ history-finder --version             # print the version and exit
   clipboard (`pbcopy` / `wl-copy` / `xclip` / `xsel`, auto-detected).
 - **`send`** — type the matched text into the _current_ pane's active program.
 - **`print`** — write the matched line to stdout (useful for piping into other
-  tools).
+  tools). With a query (`--print 'foo'`) it runs fully non-interactively, with no
+  picker; without a query it opens the picker so you can select what to print.
 
 ## Configuration
 

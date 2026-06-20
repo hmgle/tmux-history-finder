@@ -16,7 +16,7 @@ THF_PLUGIN_DIR="$(cd "$THF_CURRENT_DIR/.." && pwd)"
 # shellcheck disable=SC2155
 export T_TB=$'\t'
 
-thf_version() { echo "0.1.0"; }
+thf_version() { echo "0.2.0"; }
 
 # --- Capability detection -----------------------------------------------------
 

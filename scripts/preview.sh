@@ -19,6 +19,7 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 record="$1"
 
 # Parse fields: read into 5 vars, rest goes to text (may contain tabs).
+# shellcheck disable=SC2034  # window_name is parsed for clarity, unused here
 IFS=$'\t' read -r pane_id location command window_name line_no text <<EOF
 $record
 EOF

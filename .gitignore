@@ -1,0 +1,13 @@
+# Editor / OS cruft
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime temp files this plugin may leave behind on a crash
+thf_panes.*
+thf_index.*
+thf_filter.*
+thf_prev.*

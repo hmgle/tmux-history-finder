@@ -40,6 +40,7 @@ fi
 
 # Split the record into its fields. We read into 5 named vars and let the rest
 # (the text, which may itself contain tabs) fall into `text`.
+# shellcheck disable=SC2034  # command/window_name are parsed for clarity, unused here
 IFS=$'\t' read -r pane_id location command window_name line_no text <<EOF
 $record
 EOF

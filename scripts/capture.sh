@@ -111,6 +111,7 @@ do_capture() {
 
         # NOTE: we deliberately do NOT use capture-pane -e (escape sequences),
         # so matchable text is plain and search results are clean.
+        # shellcheck disable=SC2086  # $cap_flags must word-split into separate args
         thf_tmux capture-pane -t "$pid" $cap_flags 2>/dev/null \
             | awk -v OFS='\t' -v pid="$pid" -v loc="$loc" -v cmd="$cmd" \
                   -v win="$wname" '

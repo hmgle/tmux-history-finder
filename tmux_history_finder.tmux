@@ -23,7 +23,9 @@ launch_key="${launch_key:-g}"
 tmux bind-key "$launch_key" run-shell -b "$CURRENT_DIR/scripts/search.sh"
 
 # Friendly notice on first load (only shown if the user is looking).
-if ! tmux show-option -gqv "@thf_loaded" >/dev/null 2>&1; then
+# Note: `show-option -gqv` returns success even for an unset option, so we must
+# test its *value* (empty when unset), not its exit status.
+if [ -z "$(tmux show-option -gqv "@thf_loaded")" ]; then
     tmux set-option -g "@thf_loaded" "1"
     tmux display-message "tmux-history-finder loaded: press Prefix+$launch_key to search panes" 2>/dev/null || :
 fi

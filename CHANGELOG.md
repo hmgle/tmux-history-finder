@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-20
+
 ### Fixed
 - `@tmux_history_finder_*` options are now honoured by the key binding (and the
   CLI). They were previously exported from the transient plugin-load shell and
@@ -17,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   match the literal `--` instead, also corrupting the TAB record format.
 - The `preview` option (`@tmux_history_finder_preview` / `THF_PREVIEW`) is now
   respected; the preview was previously always shown.
+- `--print` with a query now runs fully non-interactively (no picker), matching
+  its documented "scriptable, no UI" behaviour; it previously still launched fzf.
+- The first-load notice now actually fires once. Its guard tested the exit
+  status of `show-option -gqv`, which always succeeds, so the message (and the
+  `@thf_loaded` marker) never appeared; it now tests the option's value.
 
 ### Changed
 - The fzf preview caches each pane's capture for the picker's lifetime instead

@@ -50,9 +50,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Need fzf to do anything interactive. In --print mode we still need fzf to
-# pick results, so this requirement is unconditional here.
-if ! thf_have fzf; then
+# `--print` with a query runs non-interactively: we pre-filter the index and
+# emit the matched text straight to stdout, no picker. Detect that here so we
+# can skip the fzf requirement below (fzf is only needed for the interactive UI).
+noninteractive=0
+[ "$THF_DEFAULT_ACTION" = print ] && [ -n "$query" ] && noninteractive=1
+
+# Need fzf for the interactive picker. In non-interactive `--print` mode we never
+# launch it, so the requirement only applies to the interactive path.
+if [ "$noninteractive" = 0 ] && ! thf_have fzf; then
     echo "tmux-history-finder: fzf is required but was not found in PATH." >&2
     exit 1
 fi
@@ -116,12 +122,25 @@ if [ ! -s "$search_input" ]; then
     exit 0
 fi
 
+# --- Non-interactive print ----------------------------------------------------
+# `--print 'query'` skips the picker entirely and writes each matching line's
+# text to stdout (scriptable, no UI). We reuse action.sh's print so the field
+# parsing stays in one place.
+if [ "$noninteractive" = 1 ]; then
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        bash "$CURRENT_DIR/action.sh" --action print --record "$line"
+    done < "$search_input"
+    exit 0
+fi
+
 # --- fzf options --------------------------------------------------------------
 # Display: location : command : window : line : text  (hide pane_id + line dup).
 # We keep pane_id and line_no in the selected output (fields 1 and 5) for the
 # action handler, but hide them from the list with --with-nth.
 header=$(thf_build_header)
 
+# shellcheck disable=SC2054  # commas inside "2,3,4,5,6" are fzf syntax, not separators
 fzf_opts_common=(
     --delimiter "$T_TB"
     --with-nth 2,3,4,5,6
