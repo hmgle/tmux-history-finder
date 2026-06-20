@@ -55,7 +55,9 @@ thf_import_options() {
         env_name=${pair#*:}
         cur=${!env_name}                # indirect read; empty when unset
         [ -n "$cur" ] && continue
-        value=$(tmux show-option -gqv "@tmux_history_finder_${name}" 2>/dev/null) || value=""
+        # Read through thf_tmux so an explicit THF_TMUX_ARGS socket/server is
+        # honoured here too, consistent with every other tmux call.
+        value=$(thf_tmux show-option -gqv "@tmux_history_finder_${name}" 2>/dev/null) || value=""
         [ -n "$value" ] && export "$env_name=$value"
     done
 }
