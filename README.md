@@ -23,7 +23,8 @@ job: find matches across _all_ panes (across all sessions) and act on the result
   inline instead of as a popup.
 - `fzf` (0.23+ recommended for popup support via `fzf-tmux`).
 - `ripgrep` (`rg`) — optional but recommended; falls back to `grep`.
-- `bash` 4+ (for associative arrays / `read` semantics used by the scripts).
+- `bash` 3.2+ (works with the macOS system bash; no bash-4-only features are
+  used).
 
 ## Install
 
@@ -83,6 +84,7 @@ history-finder --print 'panic'       # print matching lines (scriptable, no UI)
 history-finder --no-history          # visible screen only (ignore scrollback)
 history-finder --no-join             # don't join wrapped lines
 history-finder --case sensitive Foo  # force case sensitivity
+history-finder --version             # print the version and exit
 ```
 
 ### Actions

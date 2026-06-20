@@ -25,8 +25,21 @@ EOF
 
 [ -z "$pane_id" ] && { echo "(no record)"; exit 0; }
 
-# Re-capture this pane's full history as plain text (no escape sequences).
-content=$(thf_tmux capture-pane -p -S - -E - -t "$pane_id" 2>/dev/null)
+# Capture this pane's full history as plain text (no escape sequences). fzf
+# re-runs this preview on every navigation, so when search.sh provides a cache
+# dir we capture each pane only once and reuse it for later frames. Match the
+# index's wrap-join setting (-J) so our line numbers line up with it.
+cap_flags="-p"
+[ "${THF_JOIN_WRAPS:-1}" = 1 ] && cap_flags="$cap_flags -J"
+cache=""
+[ -n "${THF_PREVIEW_CACHE_DIR:-}" ] && cache="$THF_PREVIEW_CACHE_DIR/${pane_id//[^A-Za-z0-9]/_}"
+if [ -n "$cache" ] && [ -s "$cache" ]; then
+    content=$(cat "$cache")
+else
+    # shellcheck disable=SC2086
+    content=$(thf_tmux capture-pane $cap_flags -S - -E - -t "$pane_id" 2>/dev/null)
+    [ -n "$cache" ] && [ -n "$content" ] && printf '%s\n' "$content" > "$cache"
+fi
 [ -z "$content" ] && { echo "(could not capture $pane_id)"; exit 0; }
 
 total=$(printf '%s\n' "$content" | wc -l | tr -d ' ')
