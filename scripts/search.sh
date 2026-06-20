@@ -61,7 +61,11 @@ fi
 # We let capture.sh write to a temp file so fzf can re-read it (and so the
 # preview command can re-open it to show surrounding lines).
 index_file=$(mktemp -t thf_index.XXXXXX)
-trap 'rm -f "$index_file"' EXIT
+search_input=""
+preview_dir=""
+# One trap cleans up every temp path. The ${var:+...} guards skip the ones not
+# created yet (search_input and preview_dir are filled in below).
+trap 'rm -rf "$index_file" ${search_input:+"$search_input"} ${preview_dir:+"$preview_dir"}' EXIT
 
 cap_args=(--output "$index_file")
 [ -n "${THF_TARGET_PANE:-}" ] && cap_args+=(-t "$THF_TARGET_PANE")
@@ -82,35 +86,24 @@ fi
 # "Enter jumps" path land on the first real hit immediately. When no query is
 # given we hand fzf the whole index and let it do the narrowing.
 search_input=$(mktemp -t thf_filter.XXXXXX)
-trap 'rm -f "$index_file" "$search_input"' EXIT
 
 if [ -n "$query" ]; then
     backend=$(thf_resolve_backend)
-    case_flags=$(thf_case_flags "$THF_CASE" "$backend")
-    # Pre-filter the index down to matching records. We match the whole line
-    # (the matched text lives in field 6, but locations/commands occasionally
-    # help narrow results too) and pass the full record through untouched so the
-    # action handler still gets all six fields.
+    # Single source of truth for case handling (see thf_case_flags). The query is
+    # passed so grep's smart-case emulation can inspect it for an uppercase letter.
+    case_flags=$(thf_case_flags "$THF_CASE" "$backend" "$query")
+    # Pre-filter the index down to matching records, passing the full record
+    # through untouched so the action handler still gets all six fields.
     if [ "$backend" = rg ]; then
         # --no-config: ignore a user's ~/.ripgreprc so behavior is predictable.
-        # No -n: we don't want a line-number prefix corrupting the TAB fields.
+        # No -n: a line-number prefix would corrupt the TAB fields.
+        # shellcheck disable=SC2086
         rg --no-config $case_flags -- "$query" "$index_file" \
             > "$search_input" 2>/dev/null || :
     else
-        # grep has no smart-case; emulate it: case-insensitive unless the query
-        # contains an uppercase letter (and the user asked for smart).
-        gflags="-E"
-        if [ "$THF_CASE" = insensitive ]; then
-            gflags="$gflags -i"
-        elif [ "$THF_CASE" = smart ]; then
-            # No uppercase -> treat as case-insensitive.
-            case "$query" in
-                *[A-Z]*) : ;;  # keep case-sensitive
-                *)        gflags="$gflags -i" ;;
-            esac
-        fi
         # shellcheck disable=SC2086
-        grep $gflags -- "$query" "$index_file" > "$search_input" 2>/dev/null || :
+        grep -E $case_flags -- "$query" "$index_file" \
+            > "$search_input" 2>/dev/null || :
     fi
 else
     cp "$index_file" "$search_input"
@@ -139,10 +132,16 @@ fzf_opts_common=(
     --header "$header"
     --multi
     --tiebreak=index
-    --preview-window right:60%:wrap
 )
-# Preview shows the source pane scrolled to the matching line.
-fzf_opts_common+=(--preview "$CURRENT_DIR/preview.sh {}")
+# Preview shows the source pane scrolled to the matching line. We hand the
+# preview command a private cache dir (cleaned up by the trap above) so it can
+# capture each pane once and reuse it instead of re-capturing the whole
+# scrollback on every fzf navigation. Honour THF_PREVIEW so it can be disabled.
+if [ "${THF_PREVIEW:-1}" = 1 ]; then
+    preview_dir=$(mktemp -d -t thf_prev.XXXXXX)
+    export THF_PREVIEW_CACHE_DIR="$preview_dir"
+    fzf_opts_common+=(--preview-window right:60%:wrap --preview "$CURRENT_DIR/preview.sh {}")
+fi
 # A pre-entered query makes fzf land on the first hit immediately. We don't use
 # --exit-0: even with a pre-filtered list, we want the user to be able to refine
 # the query interactively rather than have fzf bail out on no match.

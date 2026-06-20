@@ -19,6 +19,15 @@ set -o pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+case "${1:-}" in
+    -V|--version)
+        # THF_OPTIONS_IMPORTED short-circuits the @-option import in utils.sh:
+        # a version query shouldn't depend on (or talk to) a tmux server.
+        THF_OPTIONS_IMPORTED=1 . "$DIR/scripts/utils.sh"
+        echo "tmux-history-finder $(thf_version)"
+        exit 0 ;;
+esac
+
 # Require tmux to exist; without it there's nothing to capture.
 if ! command -v tmux >/dev/null 2>&1; then
     echo "history-finder: tmux is not installed or not in PATH." >&2

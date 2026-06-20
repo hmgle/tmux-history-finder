@@ -22,17 +22,6 @@ thf_version() { echo "0.1.0"; }
 
 thf_have() { command -v "$1" >/dev/null 2>&1; }
 
-# tmux socket. Empty when running outside of tmux (CLI mode against $TMUX or
-# a passed socket); otherwise we talk to the same server the client uses.
-thf_tmux_socket_args() {
-    if [ -n "${THF_TMUX_ARGS:-}" ]; then
-        printf '%s\n' "$THF_TMUX_ARGS"
-    elif [ -n "${TMUX:-}" ]; then
-        # Inside tmux: the default `tmux` invocation targets the right server.
-        :
-    fi
-}
-
 # Run a tmux command, honouring an explicit socket override if provided.
 thf_tmux() {
     if [ -n "${THF_TMUX_ARGS:-}" ]; then
@@ -46,6 +35,33 @@ thf_tmux() {
 # --- Configuration (THF_*) ---------------------------------------------------
 # Each option has a sensible default that can be overridden via the environment
 # or via a user's tmux.conf (set-environment).
+
+# Import @tmux_history_finder_<name> options into THF_* variables, but only
+# where the variable isn't already set, so an explicit environment value or a
+# CLI flag still wins. This is the single place configuration is resolved, so
+# the key binding and the CLI behave identically. Guarded by THF_OPTIONS_IMPORTED
+# so child processes (the fzf preview, the capture/action helpers) reuse the
+# resolved values instead of re-running `tmux show-option` on every invocation.
+thf_import_options() {
+    [ -n "${THF_OPTIONS_IMPORTED:-}" ] && return 0
+    thf_have tmux || return 0
+    local pair name env_name cur value
+    for pair in \
+        launch_key:THF_LAUNCH_KEY scope:THF_SCOPE \
+        include_history:THF_INCLUDE_HISTORY case:THF_CASE backend:THF_BACKEND \
+        join_wraps:THF_JOIN_WRAPS skip_blank:THF_SKIP_BLANK preview:THF_PREVIEW \
+        default_action:THF_DEFAULT_ACTION fzf_options:THF_FZF_OPTIONS; do
+        name=${pair%%:*}
+        env_name=${pair#*:}
+        cur=${!env_name}                # indirect read; empty when unset
+        [ -n "$cur" ] && continue
+        # Read through thf_tmux so an explicit THF_TMUX_ARGS socket/server is
+        # honoured here too, consistent with every other tmux call.
+        value=$(thf_tmux show-option -gqv "@tmux_history_finder_${name}" 2>/dev/null) || value=""
+        [ -n "$value" ] && export "$env_name=$value"
+    done
+}
+thf_import_options
 
 # Key binding used to launch the interactive search. Default: `g` under prefix.
 : "${THF_LAUNCH_KEY:=g}"
@@ -67,8 +83,15 @@ thf_tmux() {
 : "${THF_FZF_OPTIONS:=}"
 # Action when pressing Enter on a result: jump | copy | send | print.
 : "${THF_DEFAULT_ACTION:=jump}"
-# Which backend to prefer for clipboard: pbcopy | wl-copy | xclip | xsel | clip.exe
-# (auto-detected; this override is only needed for unusual setups).
+# The clipboard backend for `copy` is auto-detected (pbcopy | wl-copy | xclip |
+# xsel | clip.exe); see thf_clip_cmd.
+
+# Export the resolved configuration so child processes inherit it (and skip the
+# import above). Re-assigning an exported variable keeps the export attribute,
+# so CLI overrides applied later in search.sh propagate automatically.
+export THF_LAUNCH_KEY THF_SCOPE THF_INCLUDE_HISTORY THF_CASE THF_BACKEND \
+       THF_JOIN_WRAPS THF_SKIP_BLANK THF_PREVIEW THF_DEFAULT_ACTION \
+       THF_FZF_OPTIONS THF_OPTIONS_IMPORTED=1
 
 # --- Derived helpers ----------------------------------------------------------
 
@@ -82,18 +105,25 @@ thf_resolve_backend() {
     esac
 }
 
-# Build the case-sensitivity flags for the chosen backend.
+# Build the case-sensitivity flag for the chosen backend, used by both the rg
+# and grep pre-filters in search.sh. Empty output means "no flag"; both backends
+# are case-sensitive by default.
+#   args: [case] [backend] [query]
 thf_case_flags() {
-    case "${1:-$THF_CASE}" in
-        sensitive)   printf '%s' "-- " ;;  # both rg/grep default to sensitive
-        insensitive) printf '%s' "-i" ;;
+    local mode="${1:-$THF_CASE}" backend="${2:-$(thf_resolve_backend)}" query="${3:-}"
+    case "$mode" in
+        insensitive) printf '%s' '-i' ;;
+        sensitive)   : ;;  # no flag needed; default is case-sensitive
         smart|*)
-            # rg has native smart-case (-S); grep emulates with -i only when the
-            # pattern contains an uppercase letter (handled by caller).
-            if [ "${2:-$(thf_resolve_backend)}" = rg ]; then
-                printf '%s' "-S"
+            if [ "$backend" = rg ]; then
+                printf '%s' '-S'        # ripgrep has native smart-case
             else
-                printf '%s' "--smart-case-placeholder"
+                # grep has no smart-case: emulate it -- case-insensitive unless
+                # the query contains an uppercase letter.
+                case "$query" in
+                    *[A-Z]*) : ;;       # has uppercase -> keep case-sensitive
+                    *)       printf '%s' '-i' ;;
+                esac
             fi ;;
     esac
 }
@@ -136,12 +166,6 @@ thf_use_popup() {
     fi
 }
 
-# Pick the fzf launcher: system fzf-tmux if present, otherwise plain fzf.
-thf_fzf_bin() {
-    if thf_have fzf-tmux; then echo "fzf-tmux"
-    else echo "fzf"; fi
-}
-
 # Header line shown above the fzf list. Mentions the default action so the
 # user knows what Enter will do, plus the multi-select hint.
 thf_build_header() {
@@ -172,15 +196,9 @@ thf_fzf_invoke() {
 
 # Escape a string so it matches literally when used as a tmux copy-mode
 # search pattern. tmux's search-forward/search-backward interpret the argument
-# as a regular expression, so metacharacters like [ ] . * ( ) must be escaped
-# to match the literal character. Backslash is escaped first (order matters).
+# as a regular expression, so regex metacharacters must be backslash-escaped to
+# match literally. A single character-class pass prepends a backslash to each
+# metacharacter (the backslash itself is included in the class).
 thf_regex_escape() {
     printf '%s' "$1" | sed 's/[][(){}.*+?^$|\\]/\\&/g'
-}
-
-# Escape a string for safe use as a tmux argument (single-quoted).
-thf_tmux_quote() {
-    local s=$1
-    s=${s//\'/\'\'\'}
-    printf "'%s'" "$s"
 }
