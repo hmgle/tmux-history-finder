@@ -6,8 +6,12 @@
 .idea/
 .vscode/
 
+# Rust build output
+target/
+
 # Runtime temp files this plugin may leave behind on a crash
 thf_panes.*
 thf_index.*
+thf_index.*.json
 thf_filter.*
 thf_prev.*

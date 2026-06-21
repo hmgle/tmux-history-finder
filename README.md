@@ -1,148 +1,124 @@
 # tmux-history-finder
 
-[![shellcheck](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml)
+[![ci](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml)
 
-Search the **visible text and scrollback history of every tmux pane** from a
-single fuzzy finder, then jump to, copy, send, or print the match.
+Search the visible text and scrollback history of every tmux pane from one fast
+picker, then jump to, copy, send, or print the selected match.
 
-Inspired by [tmux-fzf](https://github.com/sainnhe/tmux-fzf), but focused on one
-job: find matches across _all_ panes (across all sessions) and act on the result.
-
-- **Scope**: search every pane in every session, or limit to the current
-  session / current pane.
-- **History**: includes full scrollback by default (not just the visible screen).
-- **Fast**: pre-filters the index with `ripgrep` (or `grep`) before handing the
-  narrowed list to `fzf`, so even huge histories stay snappy.
-- **Preview**: each candidate shows a window of surrounding lines from its
-  source pane, with the match highlighted.
-- **Actions**: `jump` (switch to the pane and land the cursor on the match via
-  copy-mode search), `copy` (tmux buffer + system clipboard), `send` (type the
-  text into the current pane), or `print` (to stdout, for scripting).
+This branch uses a Rust backend (`thf`) for capture, indexing, search, preview,
+and actions. The tmux plugin entry point and legacy shell script paths remain as
+small compatibility wrappers.
 
 ## Requirements
 
-- `tmux` 3.2+ (for popup / `display-popup`); older versions work but render
-  inline instead of as a popup.
-- `fzf` (0.23+ recommended for popup support via `fzf-tmux`).
-- `ripgrep` (`rg`) — optional but recommended; falls back to `grep`.
-- `bash` 3.2+ (works with the macOS system bash; no bash-4-only features are
-  used).
+- `tmux` 3.2+ recommended.
+- `fzf` for the interactive picker.
+- Rust toolchain for source builds, or a prebuilt `bin/thf` binary.
+- Optional: `fzf-tmux` for popup rendering, `rg` for user workflows, and one
+  clipboard helper (`pbcopy`, `wl-copy`, `xclip`, `xsel`, or `clip.exe`).
 
 ## Install
 
-### With [TPM](https://github.com/tmux-plugins/tpm)
-
-Add to `~/.tmux.conf`:
+With TPM:
 
 ```tmux
 set -g @plugin 'hmgle/tmux-history-finder'
 ```
 
-Then press `prefix` + <kbd>I</kbd> to install. The default binding
-`prefix` + <kbd>g</kbd> opens the search.
+For fastest startup in a source checkout, build the backend once:
 
-### Manual
+```sh
+cargo build --release
+```
 
-Clone anywhere, then source the entry point from `tmux.conf`:
+The wrapper `history_finder.sh` runs `bin/thf`, `target/release/thf`, or
+`target/debug/thf` when present. If none exists, it falls back to `cargo run`.
+
+Manual install:
 
 ```tmux
 run-shell /path/to/tmux-history-finder/tmux_history_finder.tmux
 ```
 
-### As a standalone CLI
-
-Symlink (or add to `PATH`) the wrapper script:
-
-```sh
-ln -s /path/to/tmux-history-finder/history_finder.sh ~/.local/bin/history-finder
-```
-
 ## Usage
-
-### Interactive (inside tmux)
-
-```
-prefix + g        # open the picker across all panes
-```
-
-Type to narrow results. Key bindings inside the picker:
-
-| Key     | Action                                            |
-| ------- | ------------------------------------------------- |
-| `Enter` | Run the default action (default: `jump`)          |
-| `TAB`   | Multi-select (then `Enter` acts on each selected) |
-| `ESC`   | Cancel                                            |
-| preview | Auto-shown on the right; the match is highlighted |
-
-### From the command line
 
 ```sh
 history-finder                       # interactive, all panes
-history-finder 'error'               # pre-filtered to lines matching 'error'
-history-finder --scope session foo   # current session only
+history-finder error                 # pre-filter to matching records
+history-finder --scope session error # current session only
 history-finder --scope pane          # current pane only
-history-finder --action copy 'token' # copy the selected line to clipboard
-history-finder --print 'panic'       # print matching lines (scriptable, no UI)
-history-finder --no-history          # visible screen only (ignore scrollback)
-history-finder --no-join             # don't join wrapped lines
-history-finder --case sensitive Foo  # force case sensitivity
-history-finder --version             # print the version and exit
+history-finder --action copy token   # copy selected text
+history-finder --print panic         # non-interactive print
+history-finder --regex 'error|panic' # regex search
+history-finder doctor                # dependency/config diagnostics
 ```
 
-### Actions
+Inside fzf:
 
-- **`jump`** (default) — switch the client to the result's pane, enter
-  `copy-mode`, and run `search-forward` so the cursor lands on the matched
-  text. Locating by text (rather than a line number) is robust to blank-line
-  skipping and line-wrap joining, which would otherwise shift the coordinate.
-- **`copy`** — put the matched line into the tmux paste buffer and the system
-  clipboard (`pbcopy` / `wl-copy` / `xclip` / `xsel`, auto-detected).
-- **`send`** — type the matched text into the _current_ pane's active program.
-- **`print`** — write the matched line to stdout (useful for piping into other
-  tools). With a query (`--print 'foo'`) it runs fully non-interactively, with no
-  picker; without a query it opens the picker so you can select what to print.
+| Key      | Action                                      |
+| -------- | ------------------------------------------- |
+| `Enter`  | Run the configured default action           |
+| `TAB`    | Multi-select results                        |
+| `Ctrl-y` | Copy selected result text                   |
+| `Ctrl-s` | Send selected text to the current pane      |
+| `Ctrl-p` | Print selected text to stdout               |
+| `ESC`    | Cancel                                      |
 
 ## Configuration
 
-All options can be set two ways:
+Set options in tmux:
 
-1. **tmux `@`-options** (recommended inside `tmux.conf`):
-   ```tmux
-   set -g @tmux_history_finder_launch_key "g"
-   set -g @tmux_history_finder_default_action "copy"
-   set -g @tmux_history_finder_scope "session"
-   ```
-2. **Environment variables** (handy for the CLI):
-   ```sh
-   THF_DEFAULT_ACTION=copy history-finder 'foo'
-   ```
+```tmux
+set -g @tmux_history_finder_launch_key "g"
+set -g @tmux_history_finder_default_action "jump"
+set -g @tmux_history_finder_scope "all"
+```
 
-| Option (`@tmux_history_finder_*` / `THF_*`) | Default   | Values / meaning                                        |
-| ------------------------------------------- | --------- | ------------------------------------------------------- |
-| `launch_key`                                | `g`       | Key (under `prefix`) that opens the picker.             |
-| `scope`                                     | `all`     | `all` \| `session` \| `pane` — which panes to search.   |
-| `include_history`                           | `1`       | `1` include scrollback, `0` visible screen only.        |
-| `case`                                      | `smart`   | `smart` \| `sensitive` \| `insensitive`.                |
-| `backend`                                   | `auto`    | `auto` \| `rg` \| `grep` — pre-filter engine.           |
-| `join_wraps`                                | `1`       | `1` join visually-wrapped lines into one, `0` keep raw. |
-| `skip_blank`                                | `1`       | `1` drop empty/whitespace-only lines from the index.    |
-| `preview`                                   | `1`       | `1` show the source-pane preview in fzf.                |
-| `default_action`                            | `jump`    | `jump` \| `copy` \| `send` \| `print`.                  |
-| `fzf_options`                               | _(empty)_ | Extra options appended to the fzf invocation.           |
+Or use environment variables:
 
-## How it works
+```sh
+THF_DEFAULT_ACTION=copy history-finder token
+THF_TMUX_ARGS='-L work' history-finder --scope session error
+```
 
-1. **`capture.sh`** iterates every pane in scope, runs `tmux capture-pane` on
-   each (with scrollback), and emits a TAB-separated index:
-   `pane_id  location  command  window_name  line_no  text`.
-2. **`search.sh`** pre-filters that index with `rg`/`grep`, hands the narrowed
-   list to `fzf` (via `fzf-tmux` for the popup), and dispatches each selected
-   record to the action handler.
-3. **`preview.sh`** re-captures the candidate's source pane and shows a window
-   of surrounding lines, locating the match by its text.
-4. **`action.sh`** performs the chosen action. For `jump`, it uses copy-mode's
-   `search-forward` with a regex-escaped literal of the matched text, so the
-   cursor lands exactly on the match regardless of coordinate drift.
+Supported values:
+
+| Option / env var | Default | Values |
+| --- | --- | --- |
+| `launch_key` / `THF_LAUNCH_KEY` | `g` | tmux prefix binding |
+| `scope` / `THF_SCOPE` | `all` | `all`, `session`, `pane` |
+| `include_history` / `THF_INCLUDE_HISTORY` | `1` | `1` or `0` |
+| `case` / `THF_CASE` | `smart` | `smart`, `sensitive`, `insensitive` |
+| `join_wraps` / `THF_JOIN_WRAPS` | `1` | `1` or `0` |
+| `skip_blank` / `THF_SKIP_BLANK` | `1` | `1` or `0` |
+| `preview` / `THF_PREVIEW` | `1` | `1` or `0` |
+| `default_action` / `THF_DEFAULT_ACTION` | `jump` | `jump`, `copy`, `send`, `print` |
+| `fzf_options` / `THF_FZF_OPTIONS` | empty | extra fzf arguments |
+
+CLI flags override configuration for that run.
+
+## How It Works
+
+1. `capture` lists panes in scope and captures them in parallel.
+2. The Rust backend builds a structured temporary index: pane snapshots plus
+   record IDs for searchable lines.
+3. Search filters the in-memory index using literal matching by default, or
+   regex matching with `--regex`.
+4. fzf displays compact rows while preview and actions resolve the selected
+   record ID against the same snapshot.
+5. Actions call tmux directly to jump, copy, send, or print.
+
+## Development
+
+```sh
+cargo fmt --check
+cargo test
+cargo build
+shellcheck -x --source-path=SCRIPTDIR history_finder.sh tmux_history_finder.tmux scripts/*.sh
+```
+
+Use `bash history_finder.sh doctor` to verify local dependencies and resolved
+configuration.
 
 ## License
 

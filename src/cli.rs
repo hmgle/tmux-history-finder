@@ -1,0 +1,345 @@
+use std::{ffi::OsString, path::PathBuf};
+
+use anyhow::{Context, Result};
+use clap::{Args, Parser, Subcommand};
+use tempfile::Builder;
+
+use crate::{
+    action, capture,
+    config::{Config, ConfigOverrides},
+    fzf, index, preview, search, tmux,
+    types::{ActionKind, CaseMode, Scope, SearchMode},
+};
+
+#[derive(Parser)]
+#[command(
+    name = "tmux-history-finder",
+    version,
+    about = "Search tmux pane history with a fast Rust backend and fzf UI"
+)]
+struct App {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Search(SearchArgs),
+    Capture(CaptureArgs),
+    Preview(PreviewArgs),
+    Action(ActionArgs),
+    Doctor,
+}
+
+#[derive(Clone, Debug, Default, Args)]
+struct SearchArgs {
+    #[arg(value_name = "QUERY")]
+    positional_query: Option<String>,
+    #[arg(short = 'q', long = "query")]
+    query: Option<String>,
+    #[arg(short = 's', long = "scope", value_enum)]
+    scope: Option<Scope>,
+    #[arg(long = "action", value_enum)]
+    action: Option<ActionKind>,
+    #[arg(long = "case", value_enum)]
+    case_mode: Option<CaseMode>,
+    #[arg(long = "no-history")]
+    no_history: bool,
+    #[arg(long = "history")]
+    history: bool,
+    #[arg(long = "no-join")]
+    no_join: bool,
+    #[arg(long = "no-skip-blank")]
+    no_skip_blank: bool,
+    #[arg(short = 't', long = "target")]
+    target_pane: Option<String>,
+    #[arg(long = "print")]
+    print: bool,
+    #[arg(long = "regex", conflicts_with = "literal")]
+    regex: bool,
+    #[arg(long = "literal")]
+    literal: bool,
+    #[arg(long = "no-preview")]
+    no_preview: bool,
+}
+
+#[derive(Clone, Debug, Default, Args)]
+struct CaptureArgs {
+    #[arg(value_name = "OUTPUT")]
+    positional_output: Option<PathBuf>,
+    #[arg(short = 's', long = "scope", value_enum)]
+    scope: Option<Scope>,
+    #[arg(long = "no-history")]
+    no_history: bool,
+    #[arg(long = "history")]
+    history: bool,
+    #[arg(long = "no-join")]
+    no_join: bool,
+    #[arg(long = "no-skip-blank")]
+    no_skip_blank: bool,
+    #[arg(short = 't', long = "target")]
+    target_pane: Option<String>,
+    #[arg(short = 'o', long = "output")]
+    output: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
+struct PreviewArgs {
+    #[arg(long = "index")]
+    index: Option<PathBuf>,
+    #[arg(long = "record-id")]
+    record_id: Option<usize>,
+    #[arg(long = "query")]
+    query: Option<String>,
+    #[arg(value_name = "LEGACY_RECORD")]
+    legacy_record: Option<String>,
+}
+
+#[derive(Clone, Debug, Args)]
+struct ActionArgs {
+    #[arg(long = "action", value_enum)]
+    action: Option<ActionKind>,
+    #[arg(long = "index")]
+    index: Option<PathBuf>,
+    #[arg(long = "record-id")]
+    record_id: Option<usize>,
+    #[arg(long = "record")]
+    legacy_record: Option<String>,
+}
+
+impl SearchArgs {
+    fn resolved_query(&self) -> Option<&str> {
+        self.query
+            .as_deref()
+            .or(self.positional_query.as_deref())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn overrides(&self) -> ConfigOverrides {
+        ConfigOverrides {
+            scope: self.scope,
+            include_history: history_override(self.history, self.no_history),
+            case_mode: self.case_mode,
+            join_wraps: self.no_join.then_some(false),
+            skip_blank: self.no_skip_blank.then_some(false),
+            preview: self.no_preview.then_some(false),
+            default_action: self
+                .action
+                .or_else(|| self.print.then_some(ActionKind::Print)),
+            search_mode: self
+                .regex
+                .then_some(SearchMode::Regex)
+                .or_else(|| self.literal.then_some(SearchMode::Literal)),
+        }
+    }
+}
+
+impl CaptureArgs {
+    fn overrides(&self) -> ConfigOverrides {
+        ConfigOverrides {
+            scope: self.scope,
+            include_history: history_override(self.history, self.no_history),
+            join_wraps: self.no_join.then_some(false),
+            skip_blank: self.no_skip_blank.then_some(false),
+            ..ConfigOverrides::default()
+        }
+    }
+
+    fn output_path(&self) -> Option<&PathBuf> {
+        self.output.as_ref().or(self.positional_output.as_ref())
+    }
+}
+
+pub fn run() -> Result<()> {
+    let app = App::parse_from(normalize_args());
+    match app.command {
+        Command::Search(args) => run_search(args),
+        Command::Capture(args) => run_capture(args),
+        Command::Preview(args) => run_preview(args),
+        Command::Action(args) => run_action(args),
+        Command::Doctor => run_doctor(),
+    }
+}
+
+fn normalize_args() -> Vec<OsString> {
+    let mut args: Vec<OsString> = std::env::args_os().collect();
+    if args.len() == 1 {
+        args.push("search".into());
+        return args;
+    }
+
+    let first = args[1].to_string_lossy();
+    let known = matches!(
+        first.as_ref(),
+        "search" | "capture" | "preview" | "action" | "doctor" | "help"
+    );
+    let root_flag = matches!(first.as_ref(), "-h" | "--help" | "-V" | "--version");
+    if !known && !root_flag {
+        args.insert(1, "search".into());
+    }
+    args
+}
+
+fn run_search(args: SearchArgs) -> Result<()> {
+    ensure_tmux()?;
+    let config = Config::load(&args.overrides());
+    let query = args.resolved_query();
+    let index = capture::build_index(&config, args.target_pane.as_deref())?;
+
+    if index.records.is_empty() {
+        tmux::display_message("tmux-history-finder: no pane content to search");
+        return Ok(());
+    }
+
+    let record_ids = search::filter_record_ids(&index, query, &config)?;
+    if record_ids.is_empty() {
+        let msg = query
+            .map(|query| format!("tmux-history-finder: no matches for '{query}'"))
+            .unwrap_or_else(|| "tmux-history-finder: no matches".to_string());
+        tmux::display_message(&msg);
+        return Ok(());
+    }
+
+    if config.default_action == ActionKind::Print && query.is_some() {
+        for record_id in record_ids {
+            action::execute(&index, record_id, ActionKind::Print, &config)?;
+        }
+        return Ok(());
+    }
+
+    ensure_fzf()?;
+    let index_file = Builder::new()
+        .prefix("thf_index.")
+        .suffix(".json")
+        .tempfile()?;
+    index.save(index_file.path())?;
+    let picked = fzf::run_picker(&index, &record_ids, &config, query, index_file.path())?;
+    for record_id in picked.record_ids {
+        action::execute(&index, record_id, picked.action, &config)?;
+    }
+    Ok(())
+}
+
+fn run_capture(args: CaptureArgs) -> Result<()> {
+    ensure_tmux()?;
+    let config = Config::load(&args.overrides());
+    let index = capture::build_index(&config, args.target_pane.as_deref())?;
+    let mut output = String::new();
+    for record in &index.records {
+        if let Some(line) = index.legacy_tsv(record) {
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+
+    if let Some(path) = args.output_path() {
+        std::fs::write(path, output)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    } else {
+        print!("{output}");
+    }
+    Ok(())
+}
+
+fn run_preview(args: PreviewArgs) -> Result<()> {
+    if let (Some(index_path), Some(record_id)) = (args.index.as_ref(), args.record_id) {
+        let index = index::SearchIndex::load(index_path)?;
+        return preview::print_index_preview(&index, record_id, args.query.as_deref());
+    }
+
+    if let Some(raw) = args.legacy_record.as_deref() {
+        let record = index::LegacyRecord::parse(raw).context("malformed legacy record")?;
+        return preview::print_legacy_preview(&record);
+    }
+
+    anyhow::bail!("preview requires --index + --record-id or a legacy record");
+}
+
+fn run_action(args: ActionArgs) -> Result<()> {
+    let config = Config::load(&ConfigOverrides::default());
+    let action = args.action.unwrap_or(config.default_action);
+
+    if let (Some(index_path), Some(record_id)) = (args.index.as_ref(), args.record_id) {
+        let index = index::SearchIndex::load(index_path)?;
+        return action::execute(&index, record_id, action, &config);
+    }
+
+    if let Some(raw) = args.legacy_record.as_deref() {
+        let record = index::LegacyRecord::parse(raw).context("malformed legacy record")?;
+        return action::execute_legacy(&record, action);
+    }
+
+    anyhow::bail!("action requires --index + --record-id or --record");
+}
+
+fn run_doctor() -> Result<()> {
+    println!("tmux-history-finder {}", env!("CARGO_PKG_VERSION"));
+    println!("tmux: {}", describe_program("tmux", &["-V"], true));
+    println!("fzf: {}", describe_program("fzf", &["--version"], true));
+    println!(
+        "fzf-tmux: {}",
+        describe_program("fzf-tmux", &["--help"], false)
+    );
+    println!("rg: {}", describe_program("rg", &["--version"], false));
+    println!("clipboard: {}", clipboard_status());
+    let config = Config::load(&ConfigOverrides::default());
+    println!(
+        "config: key={} scope={} action={} preview={} history={} join_wraps={}",
+        config.launch_key,
+        config.scope,
+        config.default_action,
+        config.preview,
+        config.include_history,
+        config.join_wraps
+    );
+    Ok(())
+}
+
+fn history_override(history: bool, no_history: bool) -> Option<bool> {
+    if history {
+        Some(true)
+    } else if no_history {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn ensure_tmux() -> Result<()> {
+    if tmux::have("tmux") {
+        Ok(())
+    } else {
+        anyhow::bail!("tmux is not installed or not in PATH")
+    }
+}
+
+fn ensure_fzf() -> Result<()> {
+    if tmux::have("fzf") {
+        Ok(())
+    } else {
+        anyhow::bail!("fzf is required for interactive search")
+    }
+}
+
+fn describe_program(program: &str, version_args: &[&str], required: bool) -> String {
+    if !tmux::have(program) {
+        return if required {
+            "missing (required)"
+        } else {
+            "missing"
+        }
+        .to_string();
+    }
+    tmux::command_version(program, version_args)
+        .and_then(|value| value.lines().next().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "installed".to_string())
+}
+
+fn clipboard_status() -> String {
+    for program in ["pbcopy", "wl-copy", "xclip", "xsel", "clip.exe"] {
+        if tmux::have(program) {
+            return program.to_string();
+        }
+    }
+    "tmux buffer only".to_string()
+}

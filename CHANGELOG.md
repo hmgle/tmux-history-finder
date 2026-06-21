@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Reworked the implementation around a Rust `thf` backend. The tmux plugin file
+  and legacy shell paths remain as compatibility wrappers, but capture, search,
+  preview, and actions now run through structured Rust code.
+- Capture now runs panes in parallel and stores one structured pane snapshot per
+  search. fzf preview and result actions resolve selected record IDs against the
+  snapshot instead of repeatedly re-capturing full scrollback.
+- Search now supports built-in literal matching by default and `--regex` for
+  regular expressions, with smart/sensitive/insensitive case handling.
+
+### Added
+- `thf doctor` / `history-finder doctor` diagnostics for tmux, fzf, fzf-tmux,
+  ripgrep, clipboard support, and resolved configuration.
+- fzf action shortcuts: `Ctrl-y` copy, `Ctrl-s` send, and `Ctrl-p` print, while
+  `Enter` continues to use the configured default action.
+- Rust CI coverage for formatting, unit tests, and build verification.
+
 ## [0.2.0] - 2026-06-20
 
 ### Fixed
