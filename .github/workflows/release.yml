@@ -8,11 +8,60 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to rebuild assets for"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
+  release-notes:
+    name: publish release notes
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Extract changelog entry
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v heading="## [$version] - " '
+            index($0, heading) == 1 {
+              in_entry = 1
+              next
+            }
+            in_entry && /^## \[/ {
+              exit
+            }
+            in_entry {
+              print
+            }
+          ' CHANGELOG.md > release-notes.md
+
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "No changelog entry found for $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          current_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          previous_tag="$(git describe --tags --abbrev=0 "$current_commit^" 2>/dev/null || true)"
+          if [ -n "$previous_tag" ]; then
+            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+              "$GITHUB_REPOSITORY" "$previous_tag" "$GITHUB_REF_NAME" >> release-notes.md
+          fi
+
+      - name: Publish release notes
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+
   build:
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -25,11 +74,13 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
           - target: aarch64-apple-darwin
             os: macos-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -59,7 +110,7 @@ jobs:
       - name: Publish to release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
             thf-${{ matrix.target }}.tar.gz
             thf-${{ matrix.target }}.tar.gz.sha256

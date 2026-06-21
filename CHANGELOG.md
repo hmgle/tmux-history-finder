@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The release workflow now builds `x86_64-apple-darwin` on GitHub's supported
+  `macos-15-intel` runner instead of the retired `macos-13` image.
+- Release notes are now extracted from this changelog and published once per
+  release, avoiding duplicated generated `Full Changelog` lines.
+
+## [0.3.0] - 2026-06-21
+
 ### Changed
 - Reworked the implementation around a Rust `thf` backend. The tmux plugin file
   and legacy shell paths remain as compatibility wrappers, but capture, search,
