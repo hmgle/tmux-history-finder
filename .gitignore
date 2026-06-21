@@ -9,6 +9,9 @@
 # Rust build output
 target/
 
+# Prebuilt binary fetched by scripts/install-binary.sh
+bin/
+
 # Runtime temp files this plugin may leave behind on a crash
 thf_panes.*
 thf_index.*

@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fzf action shortcuts: `Ctrl-y` copy, `Ctrl-s` send, and `Ctrl-p` print, while
   `Enter` continues to use the configured default action.
 - Rust CI coverage for formatting, unit tests, and build verification.
+- Prebuilt `thf` binaries published to GitHub Releases (Linux/macOS, x86_64 and
+  aarch64) via a tag-triggered `release` workflow.
+- `scripts/install-binary.sh` downloads and checksum-verifies the prebuilt binary
+  for the current platform into `bin/thf`. `history_finder.sh` calls it
+  automatically when no Rust toolchain is available, so TPM installs work without
+  `cargo`. Opt out with `THF_AUTO_DOWNLOAD=0`, or point `THF_BIN` at your own
+  binary.
 
 ## [0.2.0] - 2026-06-20
 

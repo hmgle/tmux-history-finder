@@ -1,0 +1,65 @@
+name: release
+
+# Build prebuilt `thf` binaries and attach them to the GitHub Release whenever a
+# version tag is pushed. scripts/install-binary.sh downloads these assets, so the
+# asset names here (thf-<target>.tar.gz) must stay in sync with that script.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          dist="thf-${{ matrix.target }}"
+          mkdir -p "$dist"
+          cp "target/${{ matrix.target }}/release/thf" "$dist/"
+          cp README.md LICENSE CHANGELOG.md "$dist/" 2>/dev/null || true
+          tar -czf "$dist.tar.gz" "$dist"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$dist.tar.gz" > "$dist.tar.gz.sha256"
+          else
+            shasum -a 256 "$dist.tar.gz" > "$dist.tar.gz.sha256"
+          fi
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            thf-${{ matrix.target }}.tar.gz
+            thf-${{ matrix.target }}.tar.gz.sha256
