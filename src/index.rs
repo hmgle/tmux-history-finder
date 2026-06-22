@@ -11,6 +11,8 @@ pub struct PaneSnapshot {
     pub pane_id: String,
     pub command: String,
     pub window_name: String,
+    #[serde(default)]
+    pub history_start_line: usize,
     pub lines: Vec<String>,
 }
 
@@ -60,14 +62,10 @@ impl SearchIndex {
 
     pub fn legacy_tsv(&self, record: &Record) -> Option<String> {
         let pane = self.pane_for(record)?;
+        let line_no = pane.history_start_line + record.raw_line_no;
         Some(format!(
             "{}\t{}\t{}\t{}\t{}\t{}",
-            pane.pane_id,
-            record.location,
-            pane.command,
-            pane.window_name,
-            record.raw_line_no,
-            record.text
+            pane.pane_id, record.location, pane.command, pane.window_name, line_no, record.text
         ))
     }
 }
@@ -102,7 +100,7 @@ impl LegacyRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::{LegacyRecord, Record, SearchIndex};
+    use super::{LegacyRecord, PaneSnapshot, Record, SearchIndex};
 
     #[test]
     fn parses_legacy_record_with_tabs_in_text() {
@@ -133,5 +131,37 @@ mod tests {
             Some("alpha")
         );
         assert!(index.record(1).is_none());
+    }
+
+    #[test]
+    fn legacy_tsv_uses_absolute_history_line_number() {
+        let index = SearchIndex {
+            panes: vec![PaneSnapshot {
+                session: "s".into(),
+                window_index: "1".into(),
+                pane_index: "0".into(),
+                pane_id: "%1".into(),
+                command: "zsh".into(),
+                window_name: "main".into(),
+                history_start_line: 1200,
+                lines: Vec::new(),
+            }],
+            records: vec![Record {
+                id: 0,
+                pane_index: 0,
+                raw_line_no: 25,
+                logical_line_no: 25,
+                location: "s:1.0".into(),
+                text: "alpha".into(),
+                before: None,
+                after: None,
+            }],
+            ..SearchIndex::default()
+        };
+
+        assert_eq!(
+            index.legacy_tsv(&index.records[0]).as_deref(),
+            Some("%1\ts:1.0\tzsh\tmain\t1225\talpha")
+        );
     }
 }

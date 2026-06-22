@@ -107,6 +107,7 @@ mod tests {
                 pane_id: "%1".into(),
                 command: "zsh".into(),
                 window_name: "main".into(),
+                history_start_line: 0,
                 lines: vec!["Error: alpha".into()],
             }],
             records: vec![Record {

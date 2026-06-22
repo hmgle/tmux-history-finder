@@ -10,8 +10,8 @@ prompt_query="${prompt_query:-${THF_PROMPT_QUERY:-0}}"
 
 case "$prompt_query" in
     1|true|yes|on)
-        tmux bind-key "$launch_key" command-prompt -p "history search:" -T search \
-            "set-option -gq @tmux_history_finder_last_query '%%%'; run-shell -b \"$CURRENT_DIR/history_finder.sh search --query-option @tmux_history_finder_last_query --require-query\""
+        tmux bind-key "$launch_key" command-prompt -F -p "history search:" -T search \
+            "set-option -gq @tmux_history_finder_last_query_#{client_pid} '%%%'; run-shell -b \"$CURRENT_DIR/history_finder.sh search --query-option @tmux_history_finder_last_query_#{client_pid} --require-query\""
         ;;
     *)
         tmux bind-key "$launch_key" run-shell -b "$CURRENT_DIR/history_finder.sh search"

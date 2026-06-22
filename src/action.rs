@@ -27,12 +27,13 @@ pub fn execute(
     let pane = index
         .pane_for(record)
         .context("pane not found for record")?;
+    let history_line_no = history_line_no(pane.history_start_line, record.raw_line_no);
     perform(
         action,
         &ActionTarget {
             pane_id: pane.pane_id.clone(),
             location: record.location.clone(),
-            raw_line_no: record.raw_line_no,
+            raw_line_no: history_line_no,
             text: record.text.clone(),
         },
     )
@@ -113,6 +114,10 @@ fn jump(target: &ActionTarget) -> Result<()> {
     Ok(())
 }
 
+fn history_line_no(history_start_line: usize, raw_line_no: usize) -> usize {
+    history_start_line + raw_line_no
+}
+
 fn split_location(location: &str) -> (String, String) {
     let Some((session, rest)) = location.split_once(':') else {
         return (String::new(), String::new());
@@ -165,4 +170,19 @@ fn _record_target(index: &SearchIndex, record: &Record) -> Option<ActionTarget> 
         raw_line_no: record.raw_line_no,
         text: record.text.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::history_line_no;
+
+    #[test]
+    fn unbounded_capture_uses_snapshot_line_number() {
+        assert_eq!(history_line_no(0, 42), 42);
+    }
+
+    #[test]
+    fn limited_capture_restores_history_offset() {
+        assert_eq!(history_line_no(1200, 25), 1225);
+    }
 }

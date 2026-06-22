@@ -58,6 +58,7 @@ pub fn print_legacy_preview(record: &LegacyRecord) -> Result<()> {
         pane_id: record.pane_id.clone(),
         command: record.command.clone(),
         window_name: record.window_name.clone(),
+        history_start_line: 0,
         lines,
     };
     let preview_record = Record {

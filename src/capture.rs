@@ -16,6 +16,7 @@ struct PaneInfo {
     pane_id: String,
     command: String,
     window_name: String,
+    history_size: usize,
 }
 
 pub fn build_index(config: &Config, target_pane: Option<&str>) -> Result<SearchIndex> {
@@ -61,7 +62,7 @@ pub fn build_index(config: &Config, target_pane: Option<&str>) -> Result<SearchI
 }
 
 fn list_panes(scope: Scope, target_pane: Option<&str>) -> Result<Vec<PaneInfo>> {
-    let fmt = "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{window_name}";
+    let fmt = "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{history_size}\t#{window_name}";
     let output = match scope {
         Scope::All => tmux::stdout(["list-panes", "-a", "-F", fmt])?,
         Scope::Session => tmux::stdout(["list-panes", "-s", "-F", fmt])?,
@@ -92,13 +93,14 @@ fn parse_panes(output: &str) -> Vec<PaneInfo> {
     output
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(6, '\t');
+            let mut parts = line.splitn(7, '\t');
             Some(PaneInfo {
                 session: parts.next()?.to_string(),
                 window_index: parts.next()?.to_string(),
                 pane_index: parts.next()?.to_string(),
                 pane_id: parts.next()?.to_string(),
                 command: parts.next().unwrap_or_default().to_string(),
+                history_size: parts.next().unwrap_or_default().parse().unwrap_or_default(),
                 window_name: parts.next().unwrap_or_default().to_string(),
             })
         })
@@ -131,6 +133,7 @@ fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
         pane_id: pane.pane_id.clone(),
         command: pane.command.clone(),
         window_name: pane.window_name.clone(),
+        history_start_line: history_start_line(pane, config),
         lines,
     })
 }
@@ -142,9 +145,16 @@ fn history_start(config: &Config) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+fn history_start_line(pane: &PaneInfo, config: &Config) -> usize {
+    config
+        .history_lines
+        .map(|lines| pane.history_size.saturating_sub(lines))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::history_start;
+    use super::{history_start, history_start_line, PaneInfo};
     use crate::{
         config::Config,
         types::{ActionKind, CaseMode, Scope, SearchMode},
@@ -167,6 +177,18 @@ mod tests {
         }
     }
 
+    fn pane(history_size: usize) -> PaneInfo {
+        PaneInfo {
+            session: "s".into(),
+            window_index: "1".into(),
+            pane_index: "0".into(),
+            pane_id: "%1".into(),
+            command: "zsh".into(),
+            window_name: "main".into(),
+            history_size,
+        }
+    }
+
     #[test]
     fn unlimited_history_starts_at_top() {
         assert_eq!(history_start(&config(None)), "-");
@@ -175,5 +197,20 @@ mod tests {
     #[test]
     fn limited_history_uses_negative_line_count() {
         assert_eq!(history_start(&config(Some(5000))), "-5000");
+    }
+
+    #[test]
+    fn unlimited_history_has_no_line_offset() {
+        assert_eq!(history_start_line(&pane(10_000), &config(None)), 0);
+    }
+
+    #[test]
+    fn limited_history_tracks_omitted_scrollback_lines() {
+        assert_eq!(history_start_line(&pane(10_000), &config(Some(5000))), 5000);
+    }
+
+    #[test]
+    fn limited_history_offset_saturates_for_short_history() {
+        assert_eq!(history_start_line(&pane(100), &config(Some(5000))), 0);
     }
 }

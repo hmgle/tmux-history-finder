@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Record lookup now uses direct record IDs, avoiding quadratic candidate
   generation when opening the picker without an initial query.
 
+### Fixed
+- `history_lines` now preserves the omitted scrollback offset so jump actions
+  still target the selected line after a limited capture.
+- Prompted tmux searches now store the query under a client-specific temporary
+  option, avoiding accidental reuse across concurrent prompts.
+
 ## [0.3.1] - 2026-06-22
 
 ### Fixed
