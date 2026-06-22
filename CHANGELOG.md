@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-22
+
+### Changed
+- Loading configuration now reads all `@tmux_history_finder_*` tmux options in
+  one call and reuses the result, avoiding repeated `show-option` calls after
+  config import.
+- Legacy capture output is now streamed directly from captured pane text instead
+  of building a full structured search index first.
+- Literal search now checks record fields directly and avoids per-record
+  searchable-text and lowercase string allocations for common queries.
+
+### Fixed
+- Literal and regex searches continue to match across location, command, window,
+  and text fields when queries include explicit tab separators.
+- Legacy TSV capture preserves raw capture-pane line numbers when blank lines
+  are skipped, so limited-history output reports the original tmux line numbers.
+
 ## [0.4.0] - 2026-06-22
 
 ### Added
