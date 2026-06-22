@@ -1,9 +1,9 @@
 use anyhow::Result;
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 
 use crate::{
     config::Config,
-    index::SearchIndex,
+    index::{Record, SearchIndex},
     types::{CaseMode, SearchMode},
 };
 
@@ -33,14 +33,7 @@ fn filter_literal(index: &SearchIndex, query: &str, case_mode: CaseMode) -> Vec<
     index
         .records
         .iter()
-        .filter(|record| {
-            let haystack = searchable_text(index, record.id);
-            if sensitive {
-                haystack.contains(&needle)
-            } else {
-                haystack.to_ascii_lowercase().contains(&needle)
-            }
-        })
+        .filter(|record| literal_match(index, record, &needle, sensitive))
         .map(|record| record.id)
         .collect()
 }
@@ -53,22 +46,40 @@ fn filter_regex(index: &SearchIndex, query: &str, case_mode: CaseMode) -> Result
     Ok(index
         .records
         .iter()
-        .filter(|record| regex.is_match(&searchable_text(index, record.id)))
+        .filter(|record| regex_match(index, record, &regex))
         .map(|record| record.id)
         .collect())
 }
 
-fn searchable_text(index: &SearchIndex, record_id: usize) -> String {
-    let Some(record) = index.record(record_id) else {
-        return String::new();
-    };
-    let Some(pane) = index.pane_for(record) else {
-        return record.text.clone();
-    };
-    format!(
-        "{}\t{}\t{}\t{}",
-        record.location, pane.command, pane.window_name, record.text
-    )
+fn literal_match(index: &SearchIndex, record: &Record, needle: &str, sensitive: bool) -> bool {
+    if field_contains(&record.location, needle, sensitive)
+        || field_contains(&record.text, needle, sensitive)
+    {
+        return true;
+    }
+
+    index.pane_for(record).is_some_and(|pane| {
+        field_contains(&pane.command, needle, sensitive)
+            || field_contains(&pane.window_name, needle, sensitive)
+    })
+}
+
+fn field_contains(haystack: &str, needle: &str, sensitive: bool) -> bool {
+    if sensitive {
+        haystack.contains(needle)
+    } else {
+        haystack.to_ascii_lowercase().contains(needle)
+    }
+}
+
+fn regex_match(index: &SearchIndex, record: &Record, regex: &Regex) -> bool {
+    if regex.is_match(&record.location) || regex.is_match(&record.text) {
+        return true;
+    }
+
+    index
+        .pane_for(record)
+        .is_some_and(|pane| regex.is_match(&pane.command) || regex.is_match(&pane.window_name))
 }
 
 #[cfg(test)]
