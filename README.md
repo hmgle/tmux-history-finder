@@ -9,6 +9,10 @@ This branch uses a Rust backend (`thf`) for capture, indexing, search, preview,
 and actions. The tmux plugin entry point and legacy shell script paths remain as
 small compatibility wrappers.
 
+It also includes a tmux-easymotion style visible-pane motion mode: jump to any
+matching character currently visible in the active tmux window using short
+on-screen hints.
+
 ## Requirements
 
 - `tmux` 3.2+ recommended.
@@ -97,6 +101,8 @@ bash ./history_finder.sh --history-lines 5000  # limit scrollback captured per p
 bash ./history_finder.sh --action copy token   # copy selected text
 bash ./history_finder.sh --print panic         # non-interactive print
 bash ./history_finder.sh --regex 'error|panic' # regex search
+bash ./history_finder.sh motion s a            # visible-pane 1-char jump
+bash ./history_finder.sh motion s2 he          # visible-pane 2-char jump
 bash ./history_finder.sh doctor                # dependency/config diagnostics
 ```
 
@@ -111,6 +117,16 @@ Inside fzf:
 | `Ctrl-p` | Print selected text to stdout               |
 | `ESC`    | Cancel                                      |
 
+Motion mode:
+
+| Key | Action |
+| --- | --- |
+| `Prefix+s` | Prompt for one character, draw hints over visible panes, then jump to the selected hint |
+| configured `motion2_key` | Prompt for two characters and jump to the selected matching pair |
+
+The two-character binding is disabled by default. Set
+`@tmux_history_finder_motion2_key` to enable it.
+
 ## Configuration
 
 Set options in tmux:
@@ -121,6 +137,9 @@ set -g @tmux_history_finder_default_action "jump"
 set -g @tmux_history_finder_scope "all"
 set -g @tmux_history_finder_prompt_query "0"
 set -g @tmux_history_finder_history_lines "0"
+set -g @tmux_history_finder_motion_key "s"
+set -g @tmux_history_finder_motion2_key "S"
+set -g @tmux_history_finder_motion_hints "asdghklqwertyuiopzxcvbnmfj;"
 ```
 
 Or use environment variables:
@@ -145,6 +164,15 @@ Supported values:
 | `prompt_query` / `THF_PROMPT_QUERY` | `0` | `1` asks for a query before capturing panes |
 | `default_action` / `THF_DEFAULT_ACTION` | `jump` | `jump`, `copy`, `send`, `print` |
 | `fzf_options` / `THF_FZF_OPTIONS` | empty | extra fzf arguments |
+| `motion_key` / `THF_MOTION_KEY` | `s` | tmux prefix binding for 1-character visible-pane motion |
+| `motion2_key` / `THF_MOTION2_KEY` | empty | tmux prefix binding for 2-character visible-pane motion |
+| `motion_hints` / `THF_MOTION_HINTS` | `asdghklqwertyuiopzxcvbnmfj;` | characters used for motion hints |
+| `motion_case` / `THF_MOTION_CASE` | `insensitive` | `smart`, `sensitive`, `insensitive` |
+| `motion_smartsign` / `THF_MOTION_SMARTSIGN` | `0` | `1` also matches shifted symbols such as `1` -> `!` |
+| `motion_copy_mode_no_prefix` / `THF_MOTION_COPY_MODE_NO_PREFIX` | `0` | bind motion keys directly in copy-mode tables |
+| `motion_hint1_fg` / `THF_MOTION_HINT1_FG` | `1;31` | SGR color for the first hint character |
+| `motion_hint2_fg` / `THF_MOTION_HINT2_FG` | `1;32` | SGR color for the second hint character |
+| `motion_dim` / `THF_MOTION_DIM` | `2` | SGR color for dimmed pane borders |
 
 CLI flags override configuration for that run.
 
@@ -164,6 +192,11 @@ picker would capture and index more scrollback than needed.
 4. fzf displays compact rows while preview and actions resolve the selected
    record ID against the same snapshot.
 5. Actions call tmux directly to jump, copy, send, or print.
+
+Motion mode uses a separate visible-screen path. It captures only the panes in
+the current tmux window, searches their visible text, draws an ANSI hint overlay
+in a temporary tmux window, then selects the target pane and moves the copy-mode
+cursor to the selected screen row and column.
 
 ## Development
 

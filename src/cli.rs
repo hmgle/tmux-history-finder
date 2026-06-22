@@ -7,7 +7,7 @@ use tempfile::Builder;
 use crate::{
     action, capture,
     config::{Config, ConfigOverrides},
-    fzf, index, preview, search, tmux,
+    fzf, index, motion, preview, search, tmux,
     types::{ActionKind, CaseMode, Scope, SearchMode},
 };
 
@@ -28,6 +28,7 @@ enum Command {
     Capture(CaptureArgs),
     Preview(PreviewArgs),
     Action(ActionArgs),
+    Motion(motion::MotionArgs),
     Doctor,
 }
 
@@ -176,6 +177,7 @@ pub fn run() -> Result<()> {
         Command::Capture(args) => run_capture(args),
         Command::Preview(args) => run_preview(args),
         Command::Action(args) => run_action(args),
+        Command::Motion(args) => run_motion(args),
         Command::Doctor => run_doctor(),
     }
 }
@@ -190,7 +192,7 @@ fn normalize_args() -> Vec<OsString> {
     let first = args[1].to_string_lossy();
     let known = matches!(
         first.as_ref(),
-        "search" | "capture" | "preview" | "action" | "doctor" | "help"
+        "search" | "capture" | "preview" | "action" | "motion" | "doctor" | "help"
     );
     let root_flag = matches!(first.as_ref(), "-h" | "--help" | "-V" | "--version");
     if !known && !root_flag {
@@ -294,6 +296,12 @@ fn run_action(args: ActionArgs) -> Result<()> {
     anyhow::bail!("action requires --index + --record-id or --record");
 }
 
+fn run_motion(args: motion::MotionArgs) -> Result<()> {
+    ensure_tmux()?;
+    let config = Config::load(&ConfigOverrides::default());
+    motion::run(args, &config)
+}
+
 fn run_doctor() -> Result<()> {
     println!("tmux-history-finder {}", env!("CARGO_PKG_VERSION"));
     println!("tmux: {}", describe_program("tmux", &["-V"], true));
@@ -318,6 +326,19 @@ fn run_doctor() -> Result<()> {
             .map(|lines| lines.to_string())
             .unwrap_or_else(|| "all".to_string()),
         config.join_wraps
+    );
+    println!(
+        "motion: key={} key2={} hints={} case={} smartsign={} copy_mode_no_prefix={}",
+        config.motion_key,
+        if config.motion2_key.is_empty() {
+            "(disabled)"
+        } else {
+            config.motion2_key.as_str()
+        },
+        config.motion_hints,
+        config.motion_case_mode,
+        config.motion_smartsign,
+        config.motion_copy_mode_no_prefix
     );
     Ok(())
 }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Visible-pane motion mode can now jump to matching text in the current tmux
+  window with easymotion-style hints. `Prefix+s` starts one-character motion,
+  and `@tmux_history_finder_motion2_key` can enable two-character motion.
+
 ## [0.4.1] - 2026-06-22
 
 ### Changed

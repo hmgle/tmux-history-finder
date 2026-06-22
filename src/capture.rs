@@ -213,6 +213,9 @@ mod tests {
     fn config(history_lines: Option<usize>) -> Config {
         Config {
             launch_key: "g".into(),
+            motion_key: "s".into(),
+            motion2_key: String::new(),
+            motion_copy_mode_no_prefix: false,
             scope: Scope::All,
             include_history: true,
             history_lines,
@@ -224,6 +227,14 @@ mod tests {
             default_action: ActionKind::Jump,
             fzf_options: String::new(),
             search_mode: SearchMode::Literal,
+            motion_hints: "asdghklqwertyuiopzxcvbnmfj;".into(),
+            motion_case_mode: CaseMode::Insensitive,
+            motion_smartsign: false,
+            motion_vertical_border: "|".into(),
+            motion_horizontal_border: "-".into(),
+            motion_hint1_fg: "1;31".into(),
+            motion_hint2_fg: "1;32".into(),
+            motion_dim: "2".into(),
         }
     }
 

@@ -10,6 +10,9 @@ const TMUX_OPTION_PREFIX: &str = "@tmux_history_finder_";
 #[derive(Clone, Debug)]
 pub struct Config {
     pub launch_key: String,
+    pub motion_key: String,
+    pub motion2_key: String,
+    pub motion_copy_mode_no_prefix: bool,
     pub scope: Scope,
     pub include_history: bool,
     pub history_lines: Option<usize>,
@@ -21,6 +24,14 @@ pub struct Config {
     pub default_action: ActionKind,
     pub fzf_options: String,
     pub search_mode: SearchMode,
+    pub motion_hints: String,
+    pub motion_case_mode: CaseMode,
+    pub motion_smartsign: bool,
+    pub motion_vertical_border: String,
+    pub motion_horizontal_border: String,
+    pub motion_hint1_fg: String,
+    pub motion_hint2_fg: String,
+    pub motion_dim: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -40,6 +51,13 @@ impl Config {
     pub fn load(overrides: &ConfigOverrides) -> Self {
         let mut config = Self {
             launch_key: setting("launch_key", "THF_LAUNCH_KEY").unwrap_or_else(|| "g".into()),
+            motion_key: setting("motion_key", "THF_MOTION_KEY").unwrap_or_else(|| "s".into()),
+            motion2_key: setting("motion2_key", "THF_MOTION2_KEY").unwrap_or_default(),
+            motion_copy_mode_no_prefix: bool_setting(
+                "motion_copy_mode_no_prefix",
+                "THF_MOTION_COPY_MODE_NO_PREFIX",
+            )
+            .unwrap_or(false),
             scope: parse_setting("scope", "THF_SCOPE").unwrap_or_default(),
             include_history: bool_setting("include_history", "THF_INCLUDE_HISTORY").unwrap_or(true),
             history_lines: usize_setting("history_lines", "THF_HISTORY_LINES").and_then(nonzero),
@@ -52,6 +70,24 @@ impl Config {
                 .unwrap_or_default(),
             fzf_options: setting("fzf_options", "THF_FZF_OPTIONS").unwrap_or_default(),
             search_mode: SearchMode::Literal,
+            motion_hints: setting("motion_hints", "THF_MOTION_HINTS")
+                .unwrap_or_else(|| "asdghklqwertyuiopzxcvbnmfj;".into()),
+            motion_case_mode: parse_setting("motion_case", "THF_MOTION_CASE")
+                .unwrap_or(CaseMode::Insensitive),
+            motion_smartsign: bool_setting("motion_smartsign", "THF_MOTION_SMARTSIGN")
+                .unwrap_or(false),
+            motion_vertical_border: setting("motion_vertical_border", "THF_MOTION_VERTICAL_BORDER")
+                .unwrap_or_else(|| "|".into()),
+            motion_horizontal_border: setting(
+                "motion_horizontal_border",
+                "THF_MOTION_HORIZONTAL_BORDER",
+            )
+            .unwrap_or_else(|| "-".into()),
+            motion_hint1_fg: setting("motion_hint1_fg", "THF_MOTION_HINT1_FG")
+                .unwrap_or_else(|| "1;31".into()),
+            motion_hint2_fg: setting("motion_hint2_fg", "THF_MOTION_HINT2_FG")
+                .unwrap_or_else(|| "1;32".into()),
+            motion_dim: setting("motion_dim", "THF_MOTION_DIM").unwrap_or_else(|| "2".into()),
         };
 
         if let Some(scope) = overrides.scope {
