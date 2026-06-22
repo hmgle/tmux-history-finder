@@ -1,6 +1,6 @@
 use std::{
     ffi::OsString,
-    io::Write,
+    io::{ErrorKind, Write},
     path::Path,
     process::{Command, Stdio},
 };
@@ -31,7 +31,12 @@ pub fn run_picker(
         let stdin = child.stdin.as_mut().context("failed to open fzf stdin")?;
         for record_id in record_ids {
             if let Some(line) = display_line(index, *record_id) {
-                writeln!(stdin, "{line}")?;
+                if let Err(err) = writeln!(stdin, "{line}") {
+                    if err.kind() == ErrorKind::BrokenPipe {
+                        break;
+                    }
+                    return Err(err.into());
+                }
             }
         }
     }
