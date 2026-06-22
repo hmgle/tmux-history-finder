@@ -47,6 +47,8 @@ struct SearchArgs {
     no_history: bool,
     #[arg(long = "history")]
     history: bool,
+    #[arg(long = "history-lines", value_name = "LINES")]
+    history_lines: Option<usize>,
     #[arg(long = "no-join")]
     no_join: bool,
     #[arg(long = "no-skip-blank")]
@@ -61,6 +63,10 @@ struct SearchArgs {
     literal: bool,
     #[arg(long = "no-preview")]
     no_preview: bool,
+    #[arg(long = "query-option", hide = true)]
+    query_option: Option<String>,
+    #[arg(long = "require-query", hide = true)]
+    require_query: bool,
 }
 
 #[derive(Clone, Debug, Default, Args)]
@@ -73,6 +79,8 @@ struct CaptureArgs {
     no_history: bool,
     #[arg(long = "history")]
     history: bool,
+    #[arg(long = "history-lines", value_name = "LINES")]
+    history_lines: Option<usize>,
     #[arg(long = "no-join")]
     no_join: bool,
     #[arg(long = "no-skip-blank")]
@@ -108,10 +116,19 @@ struct ActionArgs {
 }
 
 impl SearchArgs {
-    fn resolved_query(&self) -> Option<&str> {
-        self.query
+    fn resolved_query(&self) -> Option<String> {
+        if let Some(query) = self
+            .query
             .as_deref()
             .or(self.positional_query.as_deref())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(query.to_string());
+        }
+
+        self.query_option
+            .as_deref()
+            .and_then(read_query_option)
             .filter(|value| !value.is_empty())
     }
 
@@ -119,6 +136,7 @@ impl SearchArgs {
         ConfigOverrides {
             scope: self.scope,
             include_history: history_override(self.history, self.no_history),
+            history_lines: history_lines_override(self.history_lines),
             case_mode: self.case_mode,
             join_wraps: self.no_join.then_some(false),
             skip_blank: self.no_skip_blank.then_some(false),
@@ -139,6 +157,7 @@ impl CaptureArgs {
         ConfigOverrides {
             scope: self.scope,
             include_history: history_override(self.history, self.no_history),
+            history_lines: history_lines_override(self.history_lines),
             join_wraps: self.no_join.then_some(false),
             skip_blank: self.no_skip_blank.then_some(false),
             ..ConfigOverrides::default()
@@ -184,6 +203,9 @@ fn run_search(args: SearchArgs) -> Result<()> {
     ensure_tmux()?;
     let config = Config::load(&args.overrides());
     let query = args.resolved_query();
+    if args.require_query && query.is_none() {
+        return Ok(());
+    }
     let index = capture::build_index(&config, args.target_pane.as_deref())?;
 
     if index.records.is_empty() {
@@ -191,9 +213,10 @@ fn run_search(args: SearchArgs) -> Result<()> {
         return Ok(());
     }
 
-    let record_ids = search::filter_record_ids(&index, query, &config)?;
+    let record_ids = search::filter_record_ids(&index, query.as_deref(), &config)?;
     if record_ids.is_empty() {
         let msg = query
+            .as_deref()
             .map(|query| format!("tmux-history-finder: no matches for '{query}'"))
             .unwrap_or_else(|| "tmux-history-finder: no matches".to_string());
         tmux::display_message(&msg);
@@ -213,7 +236,13 @@ fn run_search(args: SearchArgs) -> Result<()> {
         .suffix(".json")
         .tempfile()?;
     index.save(index_file.path())?;
-    let picked = fzf::run_picker(&index, &record_ids, &config, query, index_file.path())?;
+    let picked = fzf::run_picker(
+        &index,
+        &record_ids,
+        &config,
+        query.as_deref(),
+        index_file.path(),
+    )?;
     for record_id in picked.record_ids {
         action::execute(&index, record_id, picked.action, &config)?;
     }
@@ -284,12 +313,17 @@ fn run_doctor() -> Result<()> {
     println!("clipboard: {}", clipboard_status());
     let config = Config::load(&ConfigOverrides::default());
     println!(
-        "config: key={} scope={} action={} preview={} history={} join_wraps={}",
+        "config: key={} scope={} action={} preview={} prompt_query={} history={} history_lines={} join_wraps={}",
         config.launch_key,
         config.scope,
         config.default_action,
         config.preview,
+        config.prompt_query,
         config.include_history,
+        config
+            .history_lines
+            .map(|lines| lines.to_string())
+            .unwrap_or_else(|| "all".to_string()),
         config.join_wraps
     );
     Ok(())
@@ -303,6 +337,16 @@ fn history_override(history: bool, no_history: bool) -> Option<bool> {
     } else {
         None
     }
+}
+
+fn history_lines_override(history_lines: Option<usize>) -> Option<Option<usize>> {
+    history_lines.map(|lines| (lines > 0).then_some(lines))
+}
+
+fn read_query_option(option: &str) -> Option<String> {
+    let value = tmux::show_option(option);
+    tmux::run_ignore(["set-option", "-gu", option]);
+    value
 }
 
 fn ensure_tmux() -> Result<()> {

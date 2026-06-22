@@ -63,6 +63,7 @@ history-finder                       # interactive, all panes
 history-finder error                 # pre-filter to matching records
 history-finder --scope session error # current session only
 history-finder --scope pane          # current pane only
+history-finder --history-lines 5000  # limit scrollback captured per pane
 history-finder --action copy token   # copy selected text
 history-finder --print panic         # non-interactive print
 history-finder --regex 'error|panic' # regex search
@@ -88,6 +89,8 @@ Set options in tmux:
 set -g @tmux_history_finder_launch_key "g"
 set -g @tmux_history_finder_default_action "jump"
 set -g @tmux_history_finder_scope "all"
+set -g @tmux_history_finder_prompt_query "0"
+set -g @tmux_history_finder_history_lines "0"
 ```
 
 Or use environment variables:
@@ -104,18 +107,26 @@ Supported values:
 | `launch_key` / `THF_LAUNCH_KEY` | `g` | tmux prefix binding |
 | `scope` / `THF_SCOPE` | `all` | `all`, `session`, `pane` |
 | `include_history` / `THF_INCLUDE_HISTORY` | `1` | `1` or `0` |
+| `history_lines` / `THF_HISTORY_LINES` | `0` | `0` for all history, or a positive line count |
 | `case` / `THF_CASE` | `smart` | `smart`, `sensitive`, `insensitive` |
 | `join_wraps` / `THF_JOIN_WRAPS` | `1` | `1` or `0` |
 | `skip_blank` / `THF_SKIP_BLANK` | `1` | `1` or `0` |
 | `preview` / `THF_PREVIEW` | `1` | `1` or `0` |
+| `prompt_query` / `THF_PROMPT_QUERY` | `0` | `1` asks for a query before capturing panes |
 | `default_action` / `THF_DEFAULT_ACTION` | `jump` | `jump`, `copy`, `send`, `print` |
 | `fzf_options` / `THF_FZF_OPTIONS` | empty | extra fzf arguments |
 
 CLI flags override configuration for that run.
 
+When `prompt_query` is enabled for the tmux binding, pressing the launch key
+opens a tmux prompt first. Empty input cancels without capturing pane history.
+This is useful for large tmux servers where opening an unfiltered all-pane
+picker would capture and index more scrollback than needed.
+
 ## How It Works
 
-1. `capture` lists panes in scope and captures them in parallel.
+1. `capture` lists panes in scope and captures them in parallel, using
+   `history_lines` when a scrollback limit is configured.
 2. The Rust backend builds a structured temporary index: pane snapshots plus
    record IDs for searchable lines.
 3. Search filters the in-memory index using literal matching by default, or

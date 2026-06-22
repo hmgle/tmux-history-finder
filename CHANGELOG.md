@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `history_lines` / `THF_HISTORY_LINES` and `--history-lines` can now limit how
+  much scrollback is captured from each pane.
+- `prompt_query` / `THF_PROMPT_QUERY` can make the tmux binding ask for a query
+  before capturing pane history; empty input cancels without indexing panes.
+
+### Changed
+- Record lookup now uses direct record IDs, avoiding quadratic candidate
+  generation when opening the picker without an initial query.
+
 ## [0.3.1] - 2026-06-22
 
 ### Fixed

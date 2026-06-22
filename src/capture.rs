@@ -114,7 +114,7 @@ fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
     if config.include_history {
         args.extend([
             "-S".to_string(),
-            "-".to_string(),
+            history_start(config),
             "-E".to_string(),
             "-".to_string(),
         ]);
@@ -133,4 +133,47 @@ fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
         window_name: pane.window_name.clone(),
         lines,
     })
+}
+
+fn history_start(config: &Config) -> String {
+    config
+        .history_lines
+        .map(|lines| format!("-{lines}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::history_start;
+    use crate::{
+        config::Config,
+        types::{ActionKind, CaseMode, Scope, SearchMode},
+    };
+
+    fn config(history_lines: Option<usize>) -> Config {
+        Config {
+            launch_key: "g".into(),
+            scope: Scope::All,
+            include_history: true,
+            history_lines,
+            case_mode: CaseMode::Smart,
+            join_wraps: true,
+            skip_blank: true,
+            preview: true,
+            prompt_query: false,
+            default_action: ActionKind::Jump,
+            fzf_options: String::new(),
+            search_mode: SearchMode::Literal,
+        }
+    }
+
+    #[test]
+    fn unlimited_history_starts_at_top() {
+        assert_eq!(history_start(&config(None)), "-");
+    }
+
+    #[test]
+    fn limited_history_uses_negative_line_count() {
+        assert_eq!(history_start(&config(Some(5000))), "-5000");
+    }
 }

@@ -51,7 +51,7 @@ impl SearchIndex {
     }
 
     pub fn record(&self, id: usize) -> Option<&Record> {
-        self.records.iter().find(|record| record.id == id)
+        self.records.get(id).filter(|record| record.id == id)
     }
 
     pub fn pane_for(&self, record: &Record) -> Option<&PaneSnapshot> {
@@ -102,7 +102,7 @@ impl LegacyRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::LegacyRecord;
+    use super::{LegacyRecord, Record, SearchIndex};
 
     #[test]
     fn parses_legacy_record_with_tabs_in_text() {
@@ -110,5 +110,28 @@ mod tests {
         assert_eq!(record.pane_id, "%1");
         assert_eq!(record.line_no, 7);
         assert_eq!(record.text, "alpha\tbeta");
+    }
+
+    #[test]
+    fn record_lookup_uses_the_record_id_as_index() {
+        let index = SearchIndex {
+            records: vec![Record {
+                id: 0,
+                pane_index: 0,
+                raw_line_no: 1,
+                logical_line_no: 1,
+                location: "s:1.0".into(),
+                text: "alpha".into(),
+                before: None,
+                after: None,
+            }],
+            ..SearchIndex::default()
+        };
+
+        assert_eq!(
+            index.record(0).map(|record| record.text.as_str()),
+            Some("alpha")
+        );
+        assert!(index.record(1).is_none());
     }
 }
