@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-22
+
 ### Added
 - `history_lines` / `THF_HISTORY_LINES` and `--history-lines` can now limit how
   much scrollback is captured from each pane.
