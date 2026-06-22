@@ -252,14 +252,7 @@ fn run_search(args: SearchArgs) -> Result<()> {
 fn run_capture(args: CaptureArgs) -> Result<()> {
     ensure_tmux()?;
     let config = Config::load(&args.overrides());
-    let index = capture::build_index(&config, args.target_pane.as_deref())?;
-    let mut output = String::new();
-    for record in &index.records {
-        if let Some(line) = index.legacy_tsv(record) {
-            output.push_str(&line);
-            output.push('\n');
-        }
-    }
+    let output = capture::legacy_tsv(&config, args.target_pane.as_deref())?;
 
     if let Some(path) = args.output_path() {
         std::fs::write(path, output)

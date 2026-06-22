@@ -60,6 +60,7 @@ impl SearchIndex {
         self.panes.get(record.pane_index)
     }
 
+    #[allow(dead_code)]
     pub fn legacy_tsv(&self, record: &Record) -> Option<String> {
         let pane = self.pane_for(record)?;
         let line_no = pane.history_start_line + record.raw_line_no;

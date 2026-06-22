@@ -61,6 +61,16 @@ pub fn build_index(config: &Config, target_pane: Option<&str>) -> Result<SearchI
     })
 }
 
+pub fn legacy_tsv(config: &Config, target_pane: Option<&str>) -> Result<String> {
+    let panes = list_panes(config.scope, target_pane)?;
+    let chunks: Vec<String> = panes
+        .par_iter()
+        .filter_map(|pane| capture_pane_legacy_tsv(pane, config).ok())
+        .collect();
+
+    Ok(chunks.concat())
+}
+
 fn list_panes(scope: Scope, target_pane: Option<&str>) -> Result<Vec<PaneInfo>> {
     let fmt = "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{history_size}\t#{window_name}";
     let output = match scope {
@@ -108,7 +118,53 @@ fn parse_panes(output: &str) -> Vec<PaneInfo> {
         .collect()
 }
 
+fn capture_pane_legacy_tsv(pane: &PaneInfo, config: &Config) -> Result<String> {
+    let output = capture_pane_output(pane, config)?;
+    let location = pane_location(pane);
+    let line_offset = history_start_line(pane, config);
+    let mut logical_line_no = 0usize;
+    let mut tsv = String::new();
+
+    for line in output.lines() {
+        if config.skip_blank && line.trim().is_empty() {
+            continue;
+        }
+
+        logical_line_no += 1;
+        tsv.push_str(&pane.pane_id);
+        tsv.push('\t');
+        tsv.push_str(&location);
+        tsv.push('\t');
+        tsv.push_str(&pane.command);
+        tsv.push('\t');
+        tsv.push_str(&pane.window_name);
+        tsv.push('\t');
+        tsv.push_str(&(line_offset + logical_line_no).to_string());
+        tsv.push('\t');
+        tsv.push_str(line.trim_end_matches('\r'));
+        tsv.push('\n');
+    }
+
+    Ok(tsv)
+}
+
 fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
+    let output = capture_pane_output(pane, config)?;
+    let lines = output.lines().map(ToOwned::to_owned).collect();
+
+    Ok(PaneSnapshot {
+        session: pane.session.clone(),
+        window_index: pane.window_index.clone(),
+        pane_index: pane.pane_index.clone(),
+        pane_id: pane.pane_id.clone(),
+        command: pane.command.clone(),
+        window_name: pane.window_name.clone(),
+        history_start_line: history_start_line(pane, config),
+        lines,
+    })
+}
+
+fn capture_pane_output(pane: &PaneInfo, config: &Config) -> Result<String> {
     let mut args = vec!["capture-pane".to_string(), "-p".to_string()];
     if config.join_wraps {
         args.push("-J".to_string());
@@ -123,19 +179,11 @@ fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
     }
     args.extend(["-t".to_string(), pane.pane_id.clone()]);
 
-    let output = tmux::stdout(args)?;
-    let lines = output.lines().map(ToOwned::to_owned).collect();
+    tmux::stdout(args)
+}
 
-    Ok(PaneSnapshot {
-        session: pane.session.clone(),
-        window_index: pane.window_index.clone(),
-        pane_index: pane.pane_index.clone(),
-        pane_id: pane.pane_id.clone(),
-        command: pane.command.clone(),
-        window_name: pane.window_name.clone(),
-        history_start_line: history_start_line(pane, config),
-        lines,
-    })
+fn pane_location(pane: &PaneInfo) -> String {
+    format!("{}:{}.{}", pane.session, pane.window_index, pane.pane_index)
 }
 
 fn history_start(config: &Config) -> String {
