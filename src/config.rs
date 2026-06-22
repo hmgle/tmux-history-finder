@@ -88,7 +88,12 @@ fn setting(option_name: &str, env_name: &str) -> Option<String> {
     env::var(env_name)
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| tmux::show_option(&format!("@tmux_history_finder_{option_name}")))
+        .or_else(|| {
+            env::var_os("THF_OPTIONS_IMPORTED")
+                .is_none()
+                .then(|| tmux::show_option(&format!("@tmux_history_finder_{option_name}")))
+                .flatten()
+        })
 }
 
 fn parse_setting<T>(option_name: &str, env_name: &str) -> Option<T>
