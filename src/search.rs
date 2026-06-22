@@ -1,5 +1,5 @@
 use anyhow::Result;
-use regex::{Regex, RegexBuilder};
+use regex::RegexBuilder;
 
 use crate::{
     config::Config,
@@ -41,12 +41,19 @@ fn filter_regex(index: &SearchIndex, query: &str, case_mode: CaseMode) -> Result
     Ok(index
         .records
         .iter()
-        .filter(|record| regex_match(index, record, &regex))
+        .filter(|record| {
+            searchable_text(index, record).is_some_and(|haystack| regex.is_match(&haystack))
+        })
         .map(|record| record.id)
         .collect())
 }
 
 fn literal_match(index: &SearchIndex, record: &Record, needle: &str, sensitive: bool) -> bool {
+    if needle.contains('\t') {
+        return searchable_text(index, record)
+            .is_some_and(|haystack| field_contains(&haystack, needle, sensitive));
+    }
+
     if field_contains(&record.location, needle, sensitive)
         || field_contains(&record.text, needle, sensitive)
     {
@@ -88,14 +95,12 @@ fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
         .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
-fn regex_match(index: &SearchIndex, record: &Record, regex: &Regex) -> bool {
-    if regex.is_match(&record.location) || regex.is_match(&record.text) {
-        return true;
-    }
-
-    index
-        .pane_for(record)
-        .is_some_and(|pane| regex.is_match(&pane.command) || regex.is_match(&pane.window_name))
+fn searchable_text(index: &SearchIndex, record: &Record) -> Option<String> {
+    let pane = index.pane_for(record)?;
+    Some(format!(
+        "{}\t{}\t{}\t{}",
+        record.location, pane.command, pane.window_name, record.text
+    ))
 }
 
 #[cfg(test)]
@@ -210,6 +215,19 @@ mod tests {
     }
 
     #[test]
+    fn regex_search_can_match_across_search_fields() {
+        assert_eq!(
+            filter_record_ids(
+                &index_with_pane_metadata(),
+                Some("1\\.0\tZshShell\tLogsWindow\talpha"),
+                &config(CaseMode::Sensitive, SearchMode::Regex)
+            )
+            .unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
     fn literal_search_matches_pane_metadata_without_case() {
         assert_eq!(
             filter_record_ids(
@@ -224,6 +242,19 @@ mod tests {
             filter_record_ids(
                 &index_with_pane_metadata(),
                 Some("zshshell"),
+                &config(CaseMode::Insensitive, SearchMode::Literal)
+            )
+            .unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn literal_search_can_match_explicit_field_separators() {
+        assert_eq!(
+            filter_record_ids(
+                &index_with_pane_metadata(),
+                Some("1.0\tzshshell"),
                 &config(CaseMode::Insensitive, SearchMode::Literal)
             )
             .unwrap(),
