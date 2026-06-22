@@ -124,30 +124,36 @@ fn split_location(location: &str) -> (String, String) {
 fn copy_text(text: &str) -> Result<()> {
     tmux::run_ignore(["set-buffer", "--", text]);
 
-    if let Some((program, args)) = clipboard_command() {
+    let mut tried_clipboard = false;
+    for (program, args) in clipboard_commands() {
+        tried_clipboard = true;
         if tmux::write_to_command(program, &args, text).is_ok() {
             return Ok(());
         }
     }
 
-    tmux::display_message("tmux-history-finder: copied to tmux buffer (no system clipboard found)");
+    let reason = if tried_clipboard {
+        "system clipboard helper failed"
+    } else {
+        "no system clipboard found"
+    };
+    tmux::display_message(&format!(
+        "tmux-history-finder: copied to tmux buffer ({reason})"
+    ));
     Ok(())
 }
 
-fn clipboard_command() -> Option<(&'static str, Vec<&'static str>)> {
-    if tmux::have("pbcopy") {
-        Some(("pbcopy", vec![]))
-    } else if tmux::have("wl-copy") {
-        Some(("wl-copy", vec![]))
-    } else if tmux::have("xclip") {
-        Some(("xclip", vec!["-selection", "clipboard"]))
-    } else if tmux::have("xsel") {
-        Some(("xsel", vec!["--clipboard", "--input"]))
-    } else if tmux::have("clip.exe") {
-        Some(("clip.exe", vec![]))
-    } else {
-        None
-    }
+fn clipboard_commands() -> Vec<(&'static str, Vec<&'static str>)> {
+    [
+        ("pbcopy", vec![]),
+        ("wl-copy", vec![]),
+        ("xclip", vec!["-selection", "clipboard"]),
+        ("xsel", vec!["--clipboard", "--input"]),
+        ("clip.exe", vec![]),
+    ]
+    .into_iter()
+    .filter(|(program, _)| tmux::have(program))
+    .collect()
 }
 
 #[allow(dead_code)]
