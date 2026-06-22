@@ -56,6 +56,31 @@ Manual install:
 run-shell /path/to/tmux-history-finder/tmux_history_finder.tmux
 ```
 
+## Update
+
+When installed with TPM, `prefix + U` or `update_plugins` updates only the Git
+checkout. It does not rebuild local Cargo artifacts or replace an already
+cached backend binary.
+
+If you build from source, rebuild the backend after updating:
+
+```sh
+~/.tmux/plugins/tpm/bin/update_plugins tmux-history-finder
+cargo build --release --manifest-path ~/.tmux/plugins/tmux-history-finder/Cargo.toml
+```
+
+If you use the prebuilt release binary, refresh the cached binary explicitly:
+
+```sh
+~/.tmux/plugins/tpm/bin/update_plugins tmux-history-finder
+rm -f ~/.tmux/plugins/tmux-history-finder/target/release/thf \
+      ~/.tmux/plugins/tmux-history-finder/target/debug/thf
+bash ~/.tmux/plugins/tmux-history-finder/scripts/install-binary.sh --force
+```
+
+Reloading `~/.tmux.conf` is usually not required unless the tmux plugin entry
+script or tmux options changed.
+
 ## Usage
 
 Use `history_finder.sh` as the standalone CLI entry point. From the plugin or
