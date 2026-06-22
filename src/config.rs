@@ -1,9 +1,11 @@
-use std::{env, str::FromStr};
+use std::{collections::HashMap, env, str::FromStr, sync::OnceLock};
 
 use crate::{
     tmux,
     types::{ActionKind, CaseMode, Scope, SearchMode},
 };
+
+const TMUX_OPTION_PREFIX: &str = "@tmux_history_finder_";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -88,12 +90,22 @@ fn setting(option_name: &str, env_name: &str) -> Option<String> {
     env::var(env_name)
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| {
-            env::var_os("THF_OPTIONS_IMPORTED")
-                .is_none()
-                .then(|| tmux::show_option(&format!("@tmux_history_finder_{option_name}")))
-                .flatten()
+        .or_else(|| tmux_options().get(option_name).cloned())
+}
+
+fn tmux_options() -> &'static HashMap<String, String> {
+    static OPTIONS: OnceLock<HashMap<String, String>> = OnceLock::new();
+    OPTIONS.get_or_init(|| collect_tmux_options(tmux::show_options(TMUX_OPTION_PREFIX)))
+}
+
+fn collect_tmux_options(options: Vec<(String, String)>) -> HashMap<String, String> {
+    options
+        .into_iter()
+        .filter_map(|(name, value)| {
+            name.strip_prefix(TMUX_OPTION_PREFIX)
+                .map(|key| (key.to_string(), value))
         })
+        .collect()
 }
 
 fn parse_setting<T>(option_name: &str, env_name: &str) -> Option<T>
@@ -117,4 +129,20 @@ fn usize_setting(option_name: &str, env_name: &str) -> Option<usize> {
 
 fn nonzero(value: usize) -> Option<usize> {
     (value > 0).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_tmux_options;
+
+    #[test]
+    fn collect_tmux_options_strips_plugin_prefix() {
+        let options = collect_tmux_options(vec![
+            ("@tmux_history_finder_scope".into(), "session".into()),
+            ("@other_plugin_scope".into(), "all".into()),
+        ]);
+
+        assert_eq!(options.get("scope").map(String::as_str), Some("session"));
+        assert!(!options.contains_key("other_plugin_scope"));
+    }
 }

@@ -99,6 +99,31 @@ pub fn show_option(name: &str) -> Option<String> {
     try_stdout(["show-option", "-gqv", name]).filter(|value| !value.is_empty())
 }
 
+pub fn show_options(prefix: &str) -> Vec<(String, String)> {
+    let Ok(output) = stdout(["show-options", "-gq"]) else {
+        return Vec::new();
+    };
+
+    output
+        .lines()
+        .filter_map(parse_show_option_line)
+        .filter(|(name, _)| name.starts_with(prefix))
+        .filter(|(_, value)| !value.is_empty())
+        .collect()
+}
+
+fn parse_show_option_line(line: &str) -> Option<(String, String)> {
+    let (name, value) = line.split_once(' ')?;
+    Some((name.to_string(), unquote_option_value(value)))
+}
+
+fn unquote_option_value(value: &str) -> String {
+    shell_words::split(value)
+        .ok()
+        .and_then(|mut parts| (parts.len() == 1).then(|| parts.remove(0)))
+        .unwrap_or_else(|| value.to_string())
+}
+
 pub fn command_version(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program).args(args).output().ok()?;
     output
@@ -127,4 +152,28 @@ pub fn write_to_command(program: &str, args: &[&str], input: &str) -> Result<()>
         anyhow::bail!("{program} exited with status {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_show_option_line;
+
+    #[test]
+    fn parses_unquoted_tmux_option() {
+        assert_eq!(
+            parse_show_option_line("@tmux_history_finder_scope all"),
+            Some(("@tmux_history_finder_scope".into(), "all".into()))
+        );
+    }
+
+    #[test]
+    fn parses_quoted_tmux_option() {
+        assert_eq!(
+            parse_show_option_line("@tmux_history_finder_fzf_options \"--height 80%\""),
+            Some((
+                "@tmux_history_finder_fzf_options".into(),
+                "--height 80%".into()
+            ))
+        );
+    }
 }

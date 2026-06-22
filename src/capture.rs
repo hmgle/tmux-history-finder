@@ -120,17 +120,19 @@ fn parse_panes(output: &str) -> Vec<PaneInfo> {
 
 fn capture_pane_legacy_tsv(pane: &PaneInfo, config: &Config) -> Result<String> {
     let output = capture_pane_output(pane, config)?;
+    Ok(format_legacy_tsv(pane, config, &output))
+}
+
+fn format_legacy_tsv(pane: &PaneInfo, config: &Config, output: &str) -> String {
     let location = pane_location(pane);
     let line_offset = history_start_line(pane, config);
-    let mut logical_line_no = 0usize;
     let mut tsv = String::new();
 
-    for line in output.lines() {
+    for (line_index, line) in output.lines().enumerate() {
         if config.skip_blank && line.trim().is_empty() {
             continue;
         }
 
-        logical_line_no += 1;
         tsv.push_str(&pane.pane_id);
         tsv.push('\t');
         tsv.push_str(&location);
@@ -139,13 +141,13 @@ fn capture_pane_legacy_tsv(pane: &PaneInfo, config: &Config) -> Result<String> {
         tsv.push('\t');
         tsv.push_str(&pane.window_name);
         tsv.push('\t');
-        tsv.push_str(&(line_offset + logical_line_no).to_string());
+        tsv.push_str(&(line_offset + line_index + 1).to_string());
         tsv.push('\t');
         tsv.push_str(line.trim_end_matches('\r'));
         tsv.push('\n');
     }
 
-    Ok(tsv)
+    tsv
 }
 
 fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
@@ -202,7 +204,7 @@ fn history_start_line(pane: &PaneInfo, config: &Config) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_start, history_start_line, PaneInfo};
+    use super::{format_legacy_tsv, history_start, history_start_line, PaneInfo};
     use crate::{
         config::Config,
         types::{ActionKind, CaseMode, Scope, SearchMode},
@@ -260,5 +262,13 @@ mod tests {
     #[test]
     fn limited_history_offset_saturates_for_short_history() {
         assert_eq!(history_start_line(&pane(100), &config(Some(5000))), 0);
+    }
+
+    #[test]
+    fn legacy_tsv_keeps_raw_line_numbers_when_skipping_blanks() {
+        assert_eq!(
+            format_legacy_tsv(&pane(1300), &config(Some(100)), "alpha\n\nbeta\n"),
+            "%1\ts:1.0\tzsh\tmain\t1201\talpha\n%1\ts:1.0\tzsh\tmain\t1203\tbeta\n"
+        );
     }
 }
