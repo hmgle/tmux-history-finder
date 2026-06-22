@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation when opening the picker without an initial query.
 
 ### Fixed
+- Documented `bash ./history_finder.sh` as the standalone CLI entry point
+  instead of the non-existent `history-finder` command.
 - `history_lines` now preserves the omitted scrollback offset so jump actions
   still target the selected line after a limited capture.
 - Prompted tmux searches now store the query under a client-specific temporary
@@ -51,8 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regular expressions, with smart/sensitive/insensitive case handling.
 
 ### Added
-- `thf doctor` / `history-finder doctor` diagnostics for tmux, fzf, fzf-tmux,
-  ripgrep, clipboard support, and resolved configuration.
+- `thf doctor` / `bash ./history_finder.sh doctor` diagnostics for tmux, fzf,
+  fzf-tmux, ripgrep, clipboard support, and resolved configuration.
 - fzf action shortcuts: `Ctrl-y` copy, `Ctrl-s` send, and `Ctrl-p` print, while
   `Enter` continues to use the configured default action.
 - Rust CI coverage for formatting, unit tests, and build verification.
@@ -90,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   features are used; works with the macOS system bash).
 
 ### Added
-- `history-finder --version` / `-V`.
+- `bash ./history_finder.sh --version` / `bash ./history_finder.sh -V`.
 
 ### Removed
 - Unused internal helpers (`thf_tmux_socket_args`, `thf_fzf_bin`,

@@ -58,16 +58,21 @@ run-shell /path/to/tmux-history-finder/tmux_history_finder.tmux
 
 ## Usage
 
+Use `history_finder.sh` as the standalone CLI entry point. From the plugin or
+source directory, run it as `bash ./history_finder.sh`; from elsewhere, pass the
+full script path. The tmux binding calls the same wrapper internally, and the
+wrapper then resolves and execs the `thf` backend.
+
 ```sh
-history-finder                       # interactive, all panes
-history-finder error                 # pre-filter to matching records
-history-finder --scope session error # current session only
-history-finder --scope pane          # current pane only
-history-finder --history-lines 5000  # limit scrollback captured per pane
-history-finder --action copy token   # copy selected text
-history-finder --print panic         # non-interactive print
-history-finder --regex 'error|panic' # regex search
-history-finder doctor                # dependency/config diagnostics
+bash ./history_finder.sh                       # interactive, all panes
+bash ./history_finder.sh error                 # pre-filter to matching records
+bash ./history_finder.sh --scope session error # current session only
+bash ./history_finder.sh --scope pane          # current pane only
+bash ./history_finder.sh --history-lines 5000  # limit scrollback captured per pane
+bash ./history_finder.sh --action copy token   # copy selected text
+bash ./history_finder.sh --print panic         # non-interactive print
+bash ./history_finder.sh --regex 'error|panic' # regex search
+bash ./history_finder.sh doctor                # dependency/config diagnostics
 ```
 
 Inside fzf:
@@ -96,8 +101,8 @@ set -g @tmux_history_finder_history_lines "0"
 Or use environment variables:
 
 ```sh
-THF_DEFAULT_ACTION=copy history-finder token
-THF_TMUX_ARGS='-L work' history-finder --scope session error
+THF_DEFAULT_ACTION=copy bash ./history_finder.sh token
+THF_TMUX_ARGS='-L work' bash ./history_finder.sh --scope session error
 ```
 
 Supported values:
@@ -144,7 +149,7 @@ cargo build
 shellcheck -x --source-path=SCRIPTDIR history_finder.sh tmux_history_finder.tmux scripts/*.sh
 ```
 
-Use `bash history_finder.sh doctor` to verify local dependencies and resolved
+Use `bash ./history_finder.sh doctor` to verify local dependencies and resolved
 configuration.
 
 ## License
