@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-22
+
 ### Fixed
+- `Ctrl-y` and other fzf expect-key exits no longer fail with `BrokenPipe` when
+  fzf closes before all candidates have been written.
+- Copy now tries every available system clipboard helper before falling back to
+  the tmux buffer, so an unusable helper such as `wl-copy` no longer blocks a
+  working fallback such as `xclip`.
+- The tmux-buffer fallback message now distinguishes between missing clipboard
+  helpers and helpers that were present but failed.
 - The release workflow now builds `x86_64-apple-darwin` on GitHub's supported
   `macos-15-intel` runner instead of the retired `macos-13` image.
 - Release notes are now extracted from this changelog and published once per
