@@ -24,16 +24,11 @@ pub fn filter_record_ids(
 
 fn filter_literal(index: &SearchIndex, query: &str, case_mode: CaseMode) -> Vec<usize> {
     let sensitive = case_mode.is_sensitive_for(query);
-    let needle = if sensitive {
-        query.to_string()
-    } else {
-        query.to_ascii_lowercase()
-    };
 
     index
         .records
         .iter()
-        .filter(|record| literal_match(index, record, &needle, sensitive))
+        .filter(|record| literal_match(index, record, query, sensitive))
         .map(|record| record.id)
         .collect()
 }
@@ -68,8 +63,29 @@ fn field_contains(haystack: &str, needle: &str, sensitive: bool) -> bool {
     if sensitive {
         haystack.contains(needle)
     } else {
-        haystack.to_ascii_lowercase().contains(needle)
+        contains_ascii_case_insensitive(haystack, needle)
     }
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+
+    haystack
+        .windows(needle.len())
+        .any(|window| ascii_eq_ignore_case(window, needle))
+}
+
+fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
+    left.iter()
+        .zip(right)
+        .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
 fn regex_match(index: &SearchIndex, record: &Record, regex: &Regex) -> bool {
@@ -134,6 +150,32 @@ mod tests {
         }
     }
 
+    fn index_with_pane_metadata() -> SearchIndex {
+        SearchIndex {
+            version: 1,
+            panes: vec![PaneSnapshot {
+                session: "s".into(),
+                window_index: "1".into(),
+                pane_index: "0".into(),
+                pane_id: "%1".into(),
+                command: "ZshShell".into(),
+                window_name: "LogsWindow".into(),
+                history_start_line: 0,
+                lines: vec!["alpha".into()],
+            }],
+            records: vec![Record {
+                id: 0,
+                pane_index: 0,
+                raw_line_no: 1,
+                logical_line_no: 1,
+                location: "s:1.0".into(),
+                text: "alpha".into(),
+                before: None,
+                after: None,
+            }],
+        }
+    }
+
     #[test]
     fn literal_search_uses_smart_case() {
         assert_eq!(
@@ -161,6 +203,28 @@ mod tests {
                 &index(),
                 Some("Error: [a-z]+"),
                 &config(CaseMode::Sensitive, SearchMode::Regex)
+            )
+            .unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn literal_search_matches_pane_metadata_without_case() {
+        assert_eq!(
+            filter_record_ids(
+                &index_with_pane_metadata(),
+                Some("logswindow"),
+                &config(CaseMode::Insensitive, SearchMode::Literal)
+            )
+            .unwrap(),
+            vec![0]
+        );
+        assert_eq!(
+            filter_record_ids(
+                &index_with_pane_metadata(),
+                Some("zshshell"),
+                &config(CaseMode::Insensitive, SearchMode::Literal)
             )
             .unwrap(),
             vec![0]
