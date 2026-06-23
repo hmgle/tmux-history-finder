@@ -7,7 +7,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{config::Config, tmux, types::CaseMode};
 
@@ -648,8 +649,13 @@ fn find_matches(
             if chars.len() < pattern_len {
                 continue;
             }
-            let mut visual_col = 0;
+            let metrics = line_metrics(line, tab_mode);
             for idx in 0..=chars.len() - pattern_len {
+                let end = idx + pattern_len;
+                if !metrics.is_boundary(idx) || !metrics.is_boundary(end) {
+                    continue;
+                }
+
                 let substring: String = chars[idx..idx + pattern_len].iter().collect();
                 if patterns
                     .iter()
@@ -658,10 +664,9 @@ fn find_matches(
                     matches.push(Match {
                         pane_index,
                         line_no,
-                        visual_col,
+                        visual_col: metrics.visual_col(idx),
                     });
                 }
-                visual_col += char_width_at(chars[idx], visual_col, tab_mode);
             }
         }
     }
@@ -731,6 +736,48 @@ fn smartsign_char(ch: char) -> Option<char> {
         '.' => Some('>'),
         '/' => Some('?'),
         _ => None,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LineMetrics {
+    boundaries: Vec<bool>,
+    visual_cols: Vec<usize>,
+}
+
+impl LineMetrics {
+    fn is_boundary(&self, char_index: usize) -> bool {
+        self.boundaries.get(char_index).copied().unwrap_or(false)
+    }
+
+    fn visual_col(&self, char_index: usize) -> usize {
+        self.visual_cols
+            .get(char_index)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+fn line_metrics(line: &str, tab_mode: TabMode) -> LineMetrics {
+    let char_len = line.chars().count();
+    let mut boundaries = vec![false; char_len + 1];
+    let mut visual_cols = vec![0; char_len + 1];
+    let mut char_pos = 0;
+    let mut visual_pos = 0;
+
+    boundaries[0] = true;
+    for grapheme in line.graphemes(true) {
+        boundaries[char_pos] = true;
+        visual_cols[char_pos] = visual_pos;
+        char_pos += grapheme.chars().count();
+        visual_pos += grapheme_width_at(grapheme, visual_pos, tab_mode);
+        boundaries[char_pos] = true;
+        visual_cols[char_pos] = visual_pos;
+    }
+
+    LineMetrics {
+        boundaries,
+        visual_cols,
     }
 }
 
@@ -811,15 +858,14 @@ fn hint_positions(
             let pane = panes.get(target.pane_index)?;
             let line = pane.lines.get(target.line_no)?;
             let true_col = true_position(line, target.visual_col, tab_mode);
-            let original = line.chars().nth(true_col)?;
-            let next_original = line.chars().nth(true_col + 1).unwrap_or(' ');
+            let (original, next_original) = grapheme_at_char_index(line, true_col)?;
             Some(HintPosition {
                 screen_y: pane.start_y + target.line_no,
                 screen_x: pane.start_x + target.visual_col,
                 pane_right_edge: pane.start_x + pane.width,
-                original_width: char_width_at(original, target.visual_col, tab_mode),
+                original_width: grapheme_width_at(original, target.visual_col, tab_mode),
                 original: original.to_string(),
-                next_original: next_original.to_string(),
+                next_original: next_original.unwrap_or(" ").to_string(),
                 hint: entry.hint.clone(),
             })
         })
@@ -830,22 +876,38 @@ fn calculate_tab_width(position: usize) -> usize {
     8 - (position % 8)
 }
 
-fn char_width_at(ch: char, position: usize, tab_mode: TabMode) -> usize {
-    if ch == '\t' {
+fn grapheme_at_char_index(line: &str, target_char_index: usize) -> Option<(&str, Option<&str>)> {
+    let mut char_index = 0;
+    let mut iter = line.graphemes(true).peekable();
+    while let Some(grapheme) = iter.next() {
+        let next_index = char_index + grapheme.chars().count();
+        if char_index == target_char_index {
+            return Some((grapheme, iter.peek().copied()));
+        }
+        if next_index > target_char_index {
+            return None;
+        }
+        char_index = next_index;
+    }
+    None
+}
+
+fn grapheme_width_at(grapheme: &str, position: usize, tab_mode: TabMode) -> usize {
+    if grapheme == "\t" {
         match tab_mode {
             TabMode::Fixed => 8,
             TabMode::PositionAware => calculate_tab_width(position),
         }
     } else {
-        UnicodeWidthChar::width(ch).unwrap_or(0).max(1)
+        UnicodeWidthStr::width(grapheme).max(1)
     }
 }
 
 #[cfg(test)]
 fn string_width(value: &str, tab_mode: TabMode) -> usize {
     let mut width = 0;
-    for ch in value.chars() {
-        width += char_width_at(ch, width, tab_mode);
+    for grapheme in value.graphemes(true) {
+        width += grapheme_width_at(grapheme, width, tab_mode);
     }
     width
 }
@@ -853,12 +915,12 @@ fn string_width(value: &str, tab_mode: TabMode) -> usize {
 fn true_position(line: &str, target_col: usize, tab_mode: TabMode) -> usize {
     let mut visual_pos = 0;
     let mut true_pos = 0;
-    for ch in line.chars() {
+    for grapheme in line.graphemes(true) {
         if visual_pos >= target_col {
             break;
         }
-        visual_pos += char_width_at(ch, visual_pos, tab_mode);
-        true_pos += 1;
+        visual_pos += grapheme_width_at(grapheme, visual_pos, tab_mode);
+        true_pos += grapheme.chars().count();
     }
     true_pos
 }
@@ -866,12 +928,12 @@ fn true_position(line: &str, target_col: usize, tab_mode: TabMode) -> usize {
 fn visual_slice(value: &str, max_width: usize, tab_mode: TabMode) -> String {
     let mut visual_pos = 0;
     let mut out = String::new();
-    for ch in value.chars() {
-        let width = char_width_at(ch, visual_pos, tab_mode);
+    for grapheme in value.graphemes(true) {
+        let width = grapheme_width_at(grapheme, visual_pos, tab_mode);
         if visual_pos + width > max_width {
             break;
         }
-        out.push(ch);
+        out.push_str(grapheme);
         visual_pos += width;
     }
     if visual_pos < max_width {
@@ -886,14 +948,14 @@ fn expand_tabs(line: &str, tab_mode: TabMode) -> String {
     }
     let mut out = String::new();
     let mut pos = 0;
-    for ch in line.chars() {
-        if ch == '\t' {
-            let width = char_width_at(ch, pos, tab_mode);
+    for grapheme in line.graphemes(true) {
+        if grapheme == "\t" {
+            let width = grapheme_width_at(grapheme, pos, tab_mode);
             out.push_str(&" ".repeat(width));
             pos += width;
         } else {
-            out.push(ch);
-            pos += UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+            out.push_str(grapheme);
+            pos += UnicodeWidthStr::width(grapheme).max(1);
         }
     }
     out
@@ -1028,9 +1090,9 @@ fn set_termios(fd: i32, termios: &libc::termios) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assign_hints_by_distance, expand_tabs, find_matches, generate_hints, move_cursor,
-        smartsign_patterns, string_width, tmux_tab_mode_from_version, true_position, visual_slice,
-        Match, Pane, TabMode,
+        assign_hints_by_distance, expand_tabs, find_matches, generate_hints, hint_positions,
+        move_cursor, smartsign_patterns, string_width, tmux_tab_mode_from_version, true_position,
+        visual_slice, HintTarget, Match, Pane, TabMode,
     };
     use crate::{tmux, types::CaseMode};
     use std::{
@@ -1329,6 +1391,64 @@ mod tests {
         );
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].visual_col, 5);
+    }
+
+    #[test]
+    fn finds_matches_only_on_grapheme_boundaries() {
+        let panes = vec![pane(&["👍🏽 thumbs", "👍 plain"])];
+
+        let matches = find_matches(
+            &panes,
+            "🏽",
+            CaseMode::Insensitive,
+            false,
+            TabMode::PositionAware,
+        );
+        assert!(matches.is_empty());
+
+        let matches = find_matches(
+            &panes,
+            "👍",
+            CaseMode::Insensitive,
+            false,
+            TabMode::PositionAware,
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_no, 1);
+        assert_eq!(matches[0].visual_col, 0);
+
+        let matches = find_matches(
+            &panes,
+            "👍🏽",
+            CaseMode::Insensitive,
+            false,
+            TabMode::PositionAware,
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_no, 0);
+        assert_eq!(matches[0].visual_col, 0);
+    }
+
+    #[test]
+    fn hint_positions_restore_whole_graphemes() {
+        let panes = vec![pane(&["👍🏽x"])];
+        let positions = hint_positions(
+            &panes,
+            &[HintTarget {
+                hint: "a".into(),
+                target: Match {
+                    pane_index: 0,
+                    line_no: 0,
+                    visual_col: 0,
+                },
+            }],
+            TabMode::PositionAware,
+        );
+
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].original, "👍🏽");
+        assert_eq!(positions[0].next_original, "x");
+        assert_eq!(positions[0].original_width, 2);
     }
 
     #[test]

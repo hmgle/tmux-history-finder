@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prompt for the second motion character after motion-s2.sh stores the first.
+# Combine prompted motion characters and launch two-character motion mode.
 
 set -o pipefail
 
@@ -14,10 +14,13 @@ fi
 query_option="@tmux_history_finder_motion_query_$client_pid"
 second_option="@tmux_history_finder_motion_query_second_$client_pid"
 first=$(tmux show-option -gqv "$query_option" 2>/dev/null)
+second=$(tmux show-option -gqv "$second_option" 2>/dev/null)
 
-if [ -z "$first" ]; then
+tmux set-option -gu "$second_option" 2>/dev/null || :
+
+if [ -z "$first" ] || [ -z "$second" ]; then
     exit 0
 fi
 
-tmux command-prompt -1F -p "motion 2/2: $first" \
-    "set-option -gq $second_option '%%%'; run-shell '$CURRENT_DIR/scripts/motion-s2-submit.sh $client_pid $target_window'"
+tmux set-option -gq "$query_option" "$first$second"
+"$CURRENT_DIR/scripts/motion-run.sh" s2 "$client_pid" "$target_window"
