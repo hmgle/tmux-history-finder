@@ -73,13 +73,14 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
         &pattern,
         motion_config.case_mode,
         motion_config.smartsign,
+        motion_config.tab_mode,
     );
     if matches.is_empty() {
         tmux::display_message("tmux-history-finder motion: no match");
         return Ok(());
     }
     if matches.len() == 1 {
-        move_to_match(&matches[0])?;
+        move_to_match(&panes, &matches[0], motion_config.tab_mode)?;
         return Ok(());
     }
 
@@ -89,8 +90,9 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
         .context("active pane not found")?;
     let cursor_y = current.start_y + current.cursor_y;
     let cursor_x = current.start_x + current.cursor_x;
-    let hint_mapping = assign_hints_by_distance(&matches, cursor_y, cursor_x, &motion_config.hints);
-    let positions = hint_positions(&hint_mapping);
+    let hint_mapping =
+        assign_hints_by_distance(&panes, &matches, cursor_y, cursor_x, &motion_config.hints);
+    let positions = hint_positions(&panes, &hint_mapping, motion_config.tab_mode);
 
     if positions.is_empty() {
         tmux::display_message("tmux-history-finder motion: no drawable hints");
@@ -149,6 +151,7 @@ struct MotionConfig {
     hints: String,
     case_mode: CaseMode,
     smartsign: bool,
+    tab_mode: TabMode,
     vertical_border: String,
     horizontal_border: String,
     hint1_fg: String,
@@ -162,6 +165,7 @@ impl MotionConfig {
             hints: config.motion_hints.clone(),
             case_mode: config.motion_case_mode,
             smartsign: config.motion_smartsign,
+            tab_mode: detect_tmux_tab_mode(),
             vertical_border: config.motion_vertical_border.clone(),
             horizontal_border: config.motion_horizontal_border.clone(),
             hint1_fg: config.motion_hint1_fg.clone(),
@@ -169,6 +173,62 @@ impl MotionConfig {
             dim: config.motion_dim.clone(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TabMode {
+    Fixed,
+    PositionAware,
+}
+
+fn detect_tmux_tab_mode() -> TabMode {
+    tmux::command_version("tmux", &["-V"])
+        .as_deref()
+        .map(tmux_tab_mode_from_version)
+        .unwrap_or(TabMode::Fixed)
+}
+
+fn tmux_tab_mode_from_version(version: &str) -> TabMode {
+    let lower = version.to_ascii_lowercase();
+    if lower.contains("master") || lower.contains("openbsd-") {
+        return TabMode::Fixed;
+    }
+
+    parse_tmux_major_minor(version)
+        .filter(|version| *version >= (3, 6))
+        .map(|_| TabMode::PositionAware)
+        .unwrap_or(TabMode::Fixed)
+}
+
+fn parse_tmux_major_minor(version: &str) -> Option<(usize, usize)> {
+    let bytes = version.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if !bytes[idx].is_ascii_digit() {
+            idx += 1;
+            continue;
+        }
+
+        let major_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx >= bytes.len() || bytes[idx] != b'.' {
+            continue;
+        }
+        let major = version[major_start..idx].parse().ok()?;
+        idx += 1;
+        let minor_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if minor_start == idx {
+            continue;
+        }
+        let minor = version[minor_start..idx].parse().ok()?;
+        return Some((major, minor));
+    }
+    None
 }
 
 #[derive(Clone, Debug)]
@@ -189,7 +249,7 @@ struct Pane {
 
 #[derive(Clone, Debug)]
 struct Match {
-    pane: Pane,
+    pane_index: usize,
     line_no: usize,
     visual_col: usize,
 }
@@ -205,6 +265,7 @@ struct HintPosition {
     screen_y: usize,
     screen_x: usize,
     pane_right_edge: usize,
+    original_width: usize,
     original: String,
     next_original: String,
     hint: String,
@@ -362,7 +423,7 @@ fn run_overlay(
             .find(|target| target.hint == key_sequence)
             .map(|target| &target.target)
         {
-            move_to_match(target)?;
+            move_to_match(panes, target, config.tab_mode)?;
             return Ok(());
         }
         if key_sequence.chars().count() >= 2 {
@@ -399,8 +460,8 @@ fn draw_all_panes(
             .height
             .min(terminal_height.saturating_sub(pane.start_y));
         for (y, line) in pane.lines.iter().take(visible_height).enumerate() {
-            let expanded = expand_tabs(line);
-            let sliced = visual_slice(&expanded, pane.width);
+            let expanded = expand_tabs(line, config.tab_mode);
+            let sliced = visual_slice(&expanded, pane.width, config.tab_mode);
             screen.addstr(pane.start_y + y, pane.start_x, &sliced, Attr::Normal)?;
         }
 
@@ -447,7 +508,7 @@ fn draw_all_hints(
             )?;
         }
         if let Some(second) = hint_chars.next() {
-            let next_x = position.screen_x + string_width(&position.original);
+            let next_x = position.screen_x + position.original_width;
             if next_x < position.pane_right_edge {
                 screen.addstr(position.screen_y, next_x, &second.to_string(), Attr::Hint2)?;
             }
@@ -462,7 +523,7 @@ fn update_hints_display(
     current_key: &str,
 ) -> Result<()> {
     for position in positions {
-        let next_x = position.screen_x + string_width(&position.original);
+        let next_x = position.screen_x + position.original_width;
         let restore_next = || {
             if next_x < position.pane_right_edge {
                 if position.next_original.is_empty() {
@@ -519,19 +580,26 @@ fn update_hints_display(
     screen.refresh()
 }
 
-fn move_to_match(target: &Match) -> Result<()> {
-    let true_col = true_position(&target.pane.lines[target.line_no], target.visual_col);
-    move_cursor(&target.pane, target.line_no, true_col)
+fn move_to_match(panes: &[Pane], target: &Match, tab_mode: TabMode) -> Result<()> {
+    let pane = panes
+        .get(target.pane_index)
+        .context("motion target pane not found")?;
+    let line = pane
+        .lines
+        .get(target.line_no)
+        .context("motion target line not found")?;
+    let true_col = true_position(line, target.visual_col, tab_mode);
+    move_cursor(pane, target.line_no, true_col)
 }
 
 fn move_cursor(pane: &Pane, line_no: usize, true_col: usize) -> Result<()> {
-    tmux::run_ignore(["select-window", "-t", pane.window_id.as_str()]);
-    tmux::run_ignore(["select-pane", "-t", pane.pane_id.as_str()]);
+    tmux::run(["select-window", "-t", pane.window_id.as_str()])?;
+    tmux::run(["select-pane", "-t", pane.pane_id.as_str()])?;
     if !pane.copy_mode {
-        tmux::run_ignore(["copy-mode", "-t", pane.pane_id.as_str()]);
+        tmux::run(["copy-mode", "-t", pane.pane_id.as_str()])?;
     }
-    send_copy_command(pane, &["top-line"]);
-    send_copy_command(pane, &["start-of-line"]);
+    send_copy_command(pane, &["top-line"])?;
+    send_copy_command(pane, &["start-of-line"])?;
 
     let first_non_empty = pane
         .lines
@@ -541,39 +609,46 @@ fn move_cursor(pane: &Pane, line_no: usize, true_col: usize) -> Result<()> {
     let mut rows_remaining = line_no;
     if first_non_empty > 0 && first_non_empty <= line_no {
         let first = first_non_empty.to_string();
-        send_copy_command(pane, &["-N", first.as_str(), "cursor-down"]);
-        send_copy_command(pane, &["start-of-line"]);
+        send_copy_command(pane, &["-N", first.as_str(), "cursor-down"])?;
+        send_copy_command(pane, &["start-of-line"])?;
         rows_remaining -= first_non_empty;
     }
     if rows_remaining > 0 {
         let rows = rows_remaining.to_string();
-        send_copy_command(pane, &["-N", rows.as_str(), "cursor-down"]);
+        send_copy_command(pane, &["-N", rows.as_str(), "cursor-down"])?;
     }
     if true_col > 0 {
         let col = true_col.to_string();
-        send_copy_command(pane, &["-N", col.as_str(), "cursor-right"]);
+        send_copy_command(pane, &["-N", col.as_str(), "cursor-right"])?;
     }
     Ok(())
 }
 
-fn send_copy_command(pane: &Pane, args: &[&str]) {
+fn send_copy_command(pane: &Pane, args: &[&str]) -> Result<()> {
     let mut command = vec!["send-keys", "-X", "-t", pane.pane_id.as_str()];
     command.extend_from_slice(args);
-    tmux::run_ignore(command);
+    tmux::run(command)
 }
 
-fn find_matches(panes: &[Pane], pattern: &str, case_mode: CaseMode, smartsign: bool) -> Vec<Match> {
+fn find_matches(
+    panes: &[Pane],
+    pattern: &str,
+    case_mode: CaseMode,
+    smartsign: bool,
+    tab_mode: TabMode,
+) -> Vec<Match> {
     let patterns = smartsign_patterns(pattern, smartsign);
     let sensitive = case_mode.is_sensitive_for(pattern);
     let pattern_len = pattern.chars().count();
     let mut matches = Vec::new();
 
-    for pane in panes {
+    for (pane_index, pane) in panes.iter().enumerate() {
         for (line_no, line) in pane.lines.iter().enumerate() {
             let chars: Vec<char> = line.chars().collect();
             if chars.len() < pattern_len {
                 continue;
             }
+            let mut visual_col = 0;
             for idx in 0..=chars.len() - pattern_len {
                 let substring: String = chars[idx..idx + pattern_len].iter().collect();
                 if patterns
@@ -581,11 +656,12 @@ fn find_matches(panes: &[Pane], pattern: &str, case_mode: CaseMode, smartsign: b
                     .any(|candidate| text_eq(&substring, candidate, sensitive))
                 {
                     matches.push(Match {
-                        pane: pane.clone(),
+                        pane_index,
                         line_no,
-                        visual_col: string_width(&chars[..idx].iter().collect::<String>()),
+                        visual_col,
                     });
                 }
+                visual_col += char_width_at(chars[idx], visual_col, tab_mode);
             }
         }
     }
@@ -659,6 +735,7 @@ fn smartsign_char(ch: char) -> Option<char> {
 }
 
 fn assign_hints_by_distance(
+    panes: &[Pane],
     matches: &[Match],
     cursor_y: usize,
     cursor_x: usize,
@@ -666,8 +743,9 @@ fn assign_hints_by_distance(
 ) -> Vec<HintTarget> {
     let mut sorted = matches.to_vec();
     sorted.sort_by_key(|target| {
-        let y = target.pane.start_y + target.line_no;
-        let x = target.pane.start_x + target.visual_col;
+        let pane = &panes[target.pane_index];
+        let y = pane.start_y + target.line_no;
+        let x = pane.start_x + target.visual_col;
         y.abs_diff(cursor_y).pow(2) + x.abs_diff(cursor_x).pow(2)
     });
     let hints = generate_hints(hint_keys, sorted.len());
@@ -721,19 +799,25 @@ fn generate_hints(keys: &str, needed_count: usize) -> Vec<String> {
     hints
 }
 
-fn hint_positions(hint_mapping: &[HintTarget]) -> Vec<HintPosition> {
+fn hint_positions(
+    panes: &[Pane],
+    hint_mapping: &[HintTarget],
+    tab_mode: TabMode,
+) -> Vec<HintPosition> {
     hint_mapping
         .iter()
         .filter_map(|entry| {
             let target = &entry.target;
-            let line = target.pane.lines.get(target.line_no)?;
-            let true_col = true_position(line, target.visual_col);
+            let pane = panes.get(target.pane_index)?;
+            let line = pane.lines.get(target.line_no)?;
+            let true_col = true_position(line, target.visual_col, tab_mode);
             let original = line.chars().nth(true_col)?;
             let next_original = line.chars().nth(true_col + 1).unwrap_or(' ');
             Some(HintPosition {
-                screen_y: target.pane.start_y + target.line_no,
-                screen_x: target.pane.start_x + target.visual_col,
-                pane_right_edge: target.pane.start_x + target.pane.width,
+                screen_y: pane.start_y + target.line_no,
+                screen_x: pane.start_x + target.visual_col,
+                pane_right_edge: pane.start_x + pane.width,
+                original_width: char_width_at(original, target.visual_col, tab_mode),
                 original: original.to_string(),
                 next_original: next_original.to_string(),
                 hint: entry.hint.clone(),
@@ -746,40 +830,44 @@ fn calculate_tab_width(position: usize) -> usize {
     8 - (position % 8)
 }
 
-fn char_width_at(ch: char, position: usize) -> usize {
+fn char_width_at(ch: char, position: usize, tab_mode: TabMode) -> usize {
     if ch == '\t' {
-        calculate_tab_width(position)
+        match tab_mode {
+            TabMode::Fixed => 8,
+            TabMode::PositionAware => calculate_tab_width(position),
+        }
     } else {
         UnicodeWidthChar::width(ch).unwrap_or(0).max(1)
     }
 }
 
-fn string_width(value: &str) -> usize {
+#[cfg(test)]
+fn string_width(value: &str, tab_mode: TabMode) -> usize {
     let mut width = 0;
     for ch in value.chars() {
-        width += char_width_at(ch, width);
+        width += char_width_at(ch, width, tab_mode);
     }
     width
 }
 
-fn true_position(line: &str, target_col: usize) -> usize {
+fn true_position(line: &str, target_col: usize, tab_mode: TabMode) -> usize {
     let mut visual_pos = 0;
     let mut true_pos = 0;
     for ch in line.chars() {
         if visual_pos >= target_col {
             break;
         }
-        visual_pos += char_width_at(ch, visual_pos);
+        visual_pos += char_width_at(ch, visual_pos, tab_mode);
         true_pos += 1;
     }
     true_pos
 }
 
-fn visual_slice(value: &str, max_width: usize) -> String {
+fn visual_slice(value: &str, max_width: usize, tab_mode: TabMode) -> String {
     let mut visual_pos = 0;
     let mut out = String::new();
     for ch in value.chars() {
-        let width = char_width_at(ch, visual_pos);
+        let width = char_width_at(ch, visual_pos, tab_mode);
         if visual_pos + width > max_width {
             break;
         }
@@ -792,7 +880,7 @@ fn visual_slice(value: &str, max_width: usize) -> String {
     out
 }
 
-fn expand_tabs(line: &str) -> String {
+fn expand_tabs(line: &str, tab_mode: TabMode) -> String {
     if !line.contains('\t') {
         return line.to_string();
     }
@@ -800,7 +888,7 @@ fn expand_tabs(line: &str) -> String {
     let mut pos = 0;
     for ch in line.chars() {
         if ch == '\t' {
-            let width = calculate_tab_width(pos);
+            let width = char_width_at(ch, pos, tab_mode);
             out.push_str(&" ".repeat(width));
             pos += width;
         } else {
@@ -940,10 +1028,25 @@ fn set_termios(fd: i32, termios: &libc::termios) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assign_hints_by_distance, expand_tabs, find_matches, generate_hints, smartsign_patterns,
-        string_width, true_position, visual_slice, Match, Pane,
+        assign_hints_by_distance, expand_tabs, find_matches, generate_hints, move_cursor,
+        smartsign_patterns, string_width, tmux_tab_mode_from_version, true_position, visual_slice,
+        Match, Pane, TabMode,
     };
-    use crate::types::CaseMode;
+    use crate::{tmux, types::CaseMode};
+    use std::{
+        env,
+        ffi::OsString,
+        process::Command,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
+        thread,
+        time::Duration,
+    };
+
+    static TMUX_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static NEXT_SOCKET_ID: AtomicUsize = AtomicUsize::new(0);
 
     fn pane(lines: &[&str]) -> Pane {
         Pane {
@@ -962,27 +1065,225 @@ mod tests {
         }
     }
 
+    struct TmuxArgsGuard {
+        previous: Option<OsString>,
+    }
+
+    impl TmuxArgsGuard {
+        fn set(socket: &str) -> Self {
+            let previous = env::var_os("THF_TMUX_ARGS");
+            env::set_var("THF_TMUX_ARGS", format!("-L {socket}"));
+            Self { previous }
+        }
+    }
+
+    impl Drop for TmuxArgsGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                env::set_var("THF_TMUX_ARGS", previous);
+            } else {
+                env::remove_var("THF_TMUX_ARGS");
+            }
+        }
+    }
+
+    struct TestTmux {
+        socket: String,
+        pane_id: String,
+        width: usize,
+        height: usize,
+    }
+
+    impl TestTmux {
+        fn start(command: &str, width: usize, height: usize) -> Option<Self> {
+            if !tmux::have("tmux") {
+                return None;
+            }
+
+            let socket = format!(
+                "thf-motion-test-{}-{}",
+                std::process::id(),
+                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
+            );
+            let output = Command::new("tmux")
+                .arg("-L")
+                .arg(&socket)
+                .arg("new-session")
+                .arg("-d")
+                .arg("-x")
+                .arg(width.to_string())
+                .arg("-y")
+                .arg(height.to_string())
+                .arg("-P")
+                .arg("-F")
+                .arg("#{pane_id}")
+                .arg(command)
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+
+            let pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if pane_id.is_empty() {
+                return None;
+            }
+
+            Some(Self {
+                socket,
+                pane_id,
+                width,
+                height,
+            })
+        }
+
+        fn direct_stdout(socket: &str, args: &[&str]) -> Option<String> {
+            let output = Command::new("tmux")
+                .arg("-L")
+                .arg(socket)
+                .args(args)
+                .output()
+                .ok()?;
+            output.status.success().then(|| {
+                String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_string()
+            })
+        }
+
+        fn stdout(&self, args: &[&str]) -> String {
+            Self::direct_stdout(&self.socket, args)
+                .unwrap_or_else(|| panic!("tmux command failed: {args:?}"))
+        }
+
+        fn split_window(&self, command: &str) -> String {
+            self.stdout(&[
+                "split-window",
+                "-t",
+                self.pane_id.as_str(),
+                "-P",
+                "-F",
+                "#{pane_id}",
+                command,
+            ])
+        }
+
+        fn capture_lines(&self, pane_id: &str) -> Vec<String> {
+            let output = self.stdout(&["capture-pane", "-p", "-t", pane_id]);
+            output
+                .strip_suffix('\n')
+                .unwrap_or(&output)
+                .split('\n')
+                .take(self.height)
+                .map(ToOwned::to_owned)
+                .collect()
+        }
+
+        fn wait_for_lines(&self, pane_id: &str, needle: &str) -> Vec<String> {
+            for _ in 0..50 {
+                let lines = self.capture_lines(pane_id);
+                if lines.iter().any(|line| line.contains(needle)) {
+                    return lines;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            panic!("tmux pane did not contain {needle:?}");
+        }
+
+        fn pane(&self, pane_id: &str, lines: Vec<String>) -> Pane {
+            let window_id = self.stdout(&["display-message", "-p", "-t", pane_id, "#{window_id}"]);
+            Pane {
+                window_id,
+                pane_id: pane_id.to_string(),
+                active: pane_id == self.active_pane(),
+                start_y: 0,
+                height: self.height,
+                start_x: 0,
+                width: self.width,
+                copy_mode: false,
+                scroll_position: 0,
+                cursor_y: 0,
+                cursor_x: 0,
+                lines,
+            }
+        }
+
+        fn active_pane(&self) -> String {
+            self.stdout(&["list-panes", "-F", "#{pane_active}\t#{pane_id}"])
+                .lines()
+                .find_map(|line| {
+                    let (active, pane_id) = line.split_once('\t')?;
+                    (active == "1").then(|| pane_id.to_string())
+                })
+                .unwrap_or_default()
+        }
+
+        fn copy_cursor(&self, pane_id: &str) -> (usize, usize) {
+            let output = self.stdout(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "#{copy_cursor_x},#{copy_cursor_y}",
+            ]);
+            let (x, y) = output.split_once(',').expect("copy cursor position");
+            (x.parse().unwrap(), y.parse().unwrap())
+        }
+    }
+
+    impl Drop for TestTmux {
+        fn drop(&mut self) {
+            let _ = Command::new("tmux")
+                .arg("-L")
+                .arg(&self.socket)
+                .arg("kill-server")
+                .output();
+        }
+    }
+
+    #[test]
+    fn detects_tmux_tab_modes() {
+        assert_eq!(tmux_tab_mode_from_version("tmux 3.5a"), TabMode::Fixed);
+        assert_eq!(
+            tmux_tab_mode_from_version("tmux 3.6"),
+            TabMode::PositionAware
+        );
+        assert_eq!(
+            tmux_tab_mode_from_version("tmux next-3.7"),
+            TabMode::PositionAware
+        );
+        assert_eq!(tmux_tab_mode_from_version("tmux master"), TabMode::Fixed);
+        assert_eq!(
+            tmux_tab_mode_from_version("tmux openbsd-6.6"),
+            TabMode::Fixed
+        );
+    }
+
     #[test]
     fn calculates_cjk_and_tab_widths() {
-        assert_eq!(string_width("a"), 1);
-        assert_eq!(string_width("你"), 2);
-        assert_eq!(string_width("a\tb"), 9);
-        assert_eq!(expand_tabs("a\tb"), "a       b");
+        assert_eq!(string_width("a", TabMode::PositionAware), 1);
+        assert_eq!(string_width("你", TabMode::PositionAware), 2);
+        assert_eq!(string_width("a\tb", TabMode::PositionAware), 9);
+        assert_eq!(string_width("a\tb", TabMode::Fixed), 10);
+        assert_eq!(expand_tabs("a\tb", TabMode::PositionAware), "a       b");
+        assert_eq!(expand_tabs("a\tb", TabMode::Fixed), "a        b");
     }
 
     #[test]
     fn converts_visual_column_to_true_position() {
-        assert_eq!(true_position("a你b", 0), 0);
-        assert_eq!(true_position("a你b", 1), 1);
-        assert_eq!(true_position("a你b", 3), 2);
-        assert_eq!(true_position("a\tb", 8), 2);
+        assert_eq!(true_position("a你b", 0, TabMode::PositionAware), 0);
+        assert_eq!(true_position("a你b", 1, TabMode::PositionAware), 1);
+        assert_eq!(true_position("a你b", 3, TabMode::PositionAware), 2);
+        assert_eq!(true_position("a\tb", 8, TabMode::PositionAware), 2);
+        assert_eq!(true_position("a\tb", 8, TabMode::Fixed), 2);
+        assert_eq!(true_position("a\tb", 9, TabMode::Fixed), 2);
     }
 
     #[test]
     fn visual_slice_pads_and_avoids_splitting_wide_chars() {
-        assert_eq!(visual_slice("ab", 4), "ab  ");
-        assert_eq!(visual_slice("a你b", 2), "a ");
-        assert_eq!(visual_slice("a你b", 3), "a你");
+        assert_eq!(visual_slice("ab", 4, TabMode::PositionAware), "ab  ");
+        assert_eq!(visual_slice("a你b", 2, TabMode::PositionAware), "a ");
+        assert_eq!(visual_slice("a你b", 3, TabMode::PositionAware), "a你");
     }
 
     #[test]
@@ -1005,11 +1306,27 @@ mod tests {
     #[test]
     fn finds_matches_with_visual_columns() {
         let panes = vec![pane(&["a\tb", "你好 hello"])];
-        let matches = find_matches(&panes, "b", CaseMode::Insensitive, false);
+        let matches = find_matches(
+            &panes,
+            "b",
+            CaseMode::Insensitive,
+            false,
+            TabMode::PositionAware,
+        );
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].visual_col, 8);
 
-        let matches = find_matches(&panes, "he", CaseMode::Insensitive, false);
+        let matches = find_matches(&panes, "b", CaseMode::Insensitive, false, TabMode::Fixed);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].visual_col, 9);
+
+        let matches = find_matches(
+            &panes,
+            "he",
+            CaseMode::Insensitive,
+            false,
+            TabMode::PositionAware,
+        );
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].visual_col, 5);
     }
@@ -1017,7 +1334,13 @@ mod tests {
     #[test]
     fn smartsign_matching_finds_shifted_symbol() {
         let panes = vec![pane(&["test 3# code"])];
-        let matches = find_matches(&panes, "3", CaseMode::Sensitive, true);
+        let matches = find_matches(
+            &panes,
+            "3",
+            CaseMode::Sensitive,
+            true,
+            TabMode::PositionAware,
+        );
         assert_eq!(matches.len(), 2);
     }
 
@@ -1026,18 +1349,74 @@ mod tests {
         let pane = pane(&["aaaaaaaaaa"]);
         let matches = vec![
             Match {
-                pane: pane.clone(),
+                pane_index: 0,
                 line_no: 0,
                 visual_col: 8,
             },
             Match {
-                pane,
+                pane_index: 0,
                 line_no: 0,
                 visual_col: 1,
             },
         ];
-        let targets = assign_hints_by_distance(&matches, 0, 0, "ab");
+        let panes = vec![pane];
+        let targets = assign_hints_by_distance(&panes, &matches, 0, 0, "ab");
         assert_eq!(targets[0].target.visual_col, 1);
         assert_eq!(targets[0].hint, "a");
+    }
+
+    #[test]
+    fn move_cursor_positions_same_pane() {
+        let _lock = TMUX_ENV_LOCK.lock().unwrap();
+        let Some(server) =
+            TestTmux::start("printf 'line0\\nline1\\nline2_target\\n'; sleep 60", 30, 10)
+        else {
+            return;
+        };
+        let _env = TmuxArgsGuard::set(&server.socket);
+        let lines = server.wait_for_lines(&server.pane_id, "line2_target");
+        let pane = server.pane(&server.pane_id, lines);
+
+        move_cursor(&pane, 2, 7).expect("same-pane cursor move");
+
+        assert_eq!(server.copy_cursor(&server.pane_id), (7, 2));
+    }
+
+    #[test]
+    fn move_cursor_selects_cross_pane_target() {
+        let _lock = TMUX_ENV_LOCK.lock().unwrap();
+        let Some(server) = TestTmux::start("printf 'left\\n'; sleep 60", 40, 12) else {
+            return;
+        };
+        let pane2 = server.split_window("printf 'line0\\nline1_target\\n'; sleep 60");
+        server.stdout(&["select-pane", "-t", server.pane_id.as_str()]);
+        let _env = TmuxArgsGuard::set(&server.socket);
+        let lines = server.wait_for_lines(&pane2, "line1_target");
+        let pane = server.pane(&pane2, lines);
+
+        move_cursor(&pane, 1, 6).expect("cross-pane cursor move");
+
+        assert_eq!(server.active_pane(), pane2);
+        assert_eq!(server.copy_cursor(&pane.pane_id), (6, 1));
+    }
+
+    #[test]
+    fn move_cursor_handles_leading_empty_rows() {
+        let _lock = TMUX_ENV_LOCK.lock().unwrap();
+        let Some(server) = TestTmux::start("printf '\\n\\nleading_target\\n'; sleep 60", 40, 10)
+        else {
+            return;
+        };
+        let _env = TmuxArgsGuard::set(&server.socket);
+        let lines = server.wait_for_lines(&server.pane_id, "leading_target");
+        let target_line = lines
+            .iter()
+            .position(|line| line.contains("leading_target"))
+            .expect("target line");
+        let pane = server.pane(&server.pane_id, lines);
+
+        move_cursor(&pane, target_line, 0).expect("leading-empty cursor move");
+
+        assert_eq!(server.copy_cursor(&server.pane_id), (0, target_line));
     }
 }
