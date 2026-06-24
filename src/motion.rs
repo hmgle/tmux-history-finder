@@ -137,13 +137,15 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
     screen.init()?;
     let result = run_overlay(
         &mut screen,
-        &panes,
-        &positions,
-        &hint_mapping,
-        max_x,
-        terminal_height,
-        target_client.as_deref(),
-        &motion_config,
+        Overlay {
+            panes: &panes,
+            positions: &positions,
+            hint_mapping: &hint_mapping,
+            max_x,
+            terminal_height,
+            target_client: target_client.as_deref(),
+            config: &motion_config,
+        },
     );
     screen.cleanup()?;
     result
@@ -517,40 +519,60 @@ fn window_size(target_window: Option<&str>) -> Result<(usize, usize)> {
     Ok((parse_usize(width), parse_usize(height)))
 }
 
-fn run_overlay(
-    screen: &mut AnsiScreen,
-    panes: &[Pane],
-    positions: &[HintPosition],
-    hint_mapping: &[HintTarget],
+struct Overlay<'a> {
+    panes: &'a [Pane],
+    positions: &'a [HintPosition],
+    hint_mapping: &'a [HintTarget],
     max_x: usize,
     terminal_height: usize,
-    target_client: Option<&str>,
-    config: &MotionConfig,
-) -> Result<()> {
-    draw_all_panes(screen, panes, max_x, terminal_height, config)?;
-    draw_all_hints(screen, positions, terminal_height)?;
+    target_client: Option<&'a str>,
+    config: &'a MotionConfig,
+}
 
-    let hints_chars: HashSet<char> = config.hints.chars().collect();
+fn run_overlay(screen: &mut AnsiScreen, overlay: Overlay<'_>) -> Result<()> {
+    draw_all_panes(
+        screen,
+        overlay.panes,
+        overlay.max_x,
+        overlay.terminal_height,
+        overlay.config,
+    )?;
+    draw_all_hints(screen, overlay.positions, overlay.terminal_height)?;
+
+    let hints_chars: HashSet<char> = overlay.config.hints.chars().collect();
+    let max_hint_len = overlay
+        .hint_mapping
+        .iter()
+        .map(|target| target.hint.chars().count())
+        .max()
+        .unwrap_or_default();
     let mut key_sequence = String::new();
+    let _raw = RawMode::new()?;
     loop {
-        let ch = read_key()?;
+        let ch = read_key(&mut io::stdin())?;
         if !hints_chars.contains(&ch) {
             return Ok(());
         }
 
         key_sequence.push(ch);
-        if let Some(target) = hint_mapping
+        if let Some(target) = overlay
+            .hint_mapping
             .iter()
             .find(|target| target.hint == key_sequence)
             .map(|target| &target.target)
         {
-            move_to_match(panes, target, config.tab_mode, target_client)?;
+            move_to_match(
+                overlay.panes,
+                target,
+                overlay.config.tab_mode,
+                overlay.target_client,
+            )?;
             return Ok(());
         }
-        if key_sequence.chars().count() >= 2 {
+        if key_sequence.chars().count() >= max_hint_len {
             return Ok(());
         }
-        update_hints_display(screen, positions, &key_sequence)?;
+        update_hints_display(screen, overlay.positions, &key_sequence)?;
     }
 }
 
@@ -935,12 +957,12 @@ fn generate_hints(keys: &str, needed_count: usize) -> Vec<String> {
     if needed_count == 0 {
         return Vec::new();
     }
-    let keys: Vec<char> = keys.chars().collect();
+    let mut seen = HashSet::new();
+    let keys: Vec<char> = keys.chars().filter(|key| seen.insert(*key)).collect();
     let key_count = keys.len();
     if key_count == 0 {
         return Vec::new();
     }
-    let needed_count = needed_count.min(key_count * key_count);
     if needed_count <= key_count {
         return keys
             .iter()
@@ -949,28 +971,26 @@ fn generate_hints(keys: &str, needed_count: usize) -> Vec<String> {
             .collect();
     }
 
-    let mut double_hints = Vec::new();
-    for prefix in &keys {
-        for suffix in &keys {
-            double_hints.push(format!("{prefix}{suffix}"));
-        }
+    let mut hints: Vec<String> = keys.iter().map(char::to_string).collect();
+    while hints.len() < needed_count {
+        let shortest = hints
+            .iter()
+            .map(|hint| hint.chars().count())
+            .min()
+            .unwrap_or_default();
+        let index = hints
+            .iter()
+            .rposition(|hint| hint.chars().count() == shortest)
+            .expect("hint list is non-empty");
+        let prefix = hints.remove(index);
+        let children = keys.iter().map(|key| {
+            let mut hint = prefix.clone();
+            hint.push(*key);
+            hint
+        });
+        hints.splice(index..index, children);
     }
-
-    let mut single_chars = 0;
-    for i in (1..=key_count).rev() {
-        if needed_count <= (key_count - i) * key_count + i {
-            single_chars = i;
-            break;
-        }
-    }
-    let singles: Vec<char> = keys.iter().copied().take(single_chars).collect();
-    let mut hints: Vec<String> = singles.iter().map(char::to_string).collect();
-    hints.extend(
-        double_hints
-            .into_iter()
-            .filter(|hint| !singles.iter().any(|single| hint.starts_with(*single)))
-            .take(needed_count - single_chars),
-    );
+    hints.truncate(needed_count);
     hints
 }
 
@@ -1169,11 +1189,9 @@ impl Drop for RawMode {
     }
 }
 
-fn read_key() -> Result<char> {
-    let _raw = RawMode::new()?;
-    let mut stdin = io::stdin();
+fn read_key(reader: &mut impl Read) -> Result<char> {
     let mut first = [0_u8; 1];
-    stdin.read_exact(&mut first)?;
+    reader.read_exact(&mut first)?;
     if first[0] == 0x03 {
         anyhow::bail!("cancelled");
     }
@@ -1181,7 +1199,7 @@ fn read_key() -> Result<char> {
     let mut bytes = vec![first[0]];
     if width > 1 {
         let mut rest = vec![0_u8; width - 1];
-        stdin.read_exact(&mut rest)?;
+        reader.read_exact(&mut rest)?;
         bytes.extend(rest);
     }
     let value = std::str::from_utf8(&bytes)?;
@@ -1219,8 +1237,9 @@ fn set_termios(fd: i32, termios: &libc::termios) -> Result<()> {
 mod tests {
     use super::{
         assign_hints_by_distance, expand_tabs, find_matches, generate_hints, hint_positions,
-        move_cursor, popup_command, smartsign_patterns, string_width, tmux_tab_mode_from_version,
-        true_position, visual_slice, HintTarget, Match, MotionArgs, MotionKind, Pane, TabMode,
+        move_cursor, popup_command, read_key, smartsign_patterns, string_width,
+        tmux_tab_mode_from_version, true_position, visual_slice, HintTarget, Match, MotionArgs,
+        MotionKind, Pane, TabMode,
     };
     use crate::{tmux, types::CaseMode};
     use std::{
@@ -1484,6 +1503,32 @@ mod tests {
         assert!(!hints
             .iter()
             .any(|hint| hint.len() == 2 && hint.starts_with('a')));
+    }
+
+    #[test]
+    fn generates_hints_beyond_two_keys() {
+        let hints = generate_hints("ab", 7);
+
+        assert_eq!(hints.len(), 7);
+        assert!(hints.iter().any(|hint| hint.chars().count() == 3));
+        for (idx, hint) in hints.iter().enumerate() {
+            assert!(!hints
+                .iter()
+                .enumerate()
+                .any(|(other_idx, other)| { idx != other_idx && other.starts_with(hint) }));
+        }
+    }
+
+    #[test]
+    fn generate_hints_ignores_duplicate_keys() {
+        assert_eq!(generate_hints("aabb", 2), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn read_key_reads_multibyte_utf8() {
+        let mut input = "你".as_bytes();
+
+        assert_eq!(read_key(&mut input).expect("utf-8 key"), '你');
     }
 
     #[test]
