@@ -1007,13 +1007,18 @@ fn hint_positions(
             let line = pane.lines.get(target.line_no)?;
             let true_col = true_position(line, target.visual_col, tab_mode);
             let (original, next_original) = grapheme_at_char_index(line, true_col)?;
+            let original_width = grapheme_width_at(original, target.visual_col, tab_mode);
+            let original = display_grapheme(original, target.visual_col, tab_mode);
+            let next_original = next_original
+                .map(|next| display_grapheme(next, target.visual_col + original_width, tab_mode))
+                .unwrap_or_else(|| " ".to_string());
             Some(HintPosition {
                 screen_y: pane.start_y + target.line_no,
                 screen_x: pane.start_x + target.visual_col,
                 pane_right_edge: pane.start_x + pane.width,
-                original_width: grapheme_width_at(original, target.visual_col, tab_mode),
-                original: original.to_string(),
-                next_original: next_original.unwrap_or(" ").to_string(),
+                original_width,
+                original,
+                next_original,
                 hint: entry.hint.clone(),
             })
         })
@@ -1048,6 +1053,14 @@ fn grapheme_width_at(grapheme: &str, position: usize, tab_mode: TabMode) -> usiz
         }
     } else {
         UnicodeWidthStr::width(grapheme).max(1)
+    }
+}
+
+fn display_grapheme(grapheme: &str, position: usize, tab_mode: TabMode) -> String {
+    if grapheme == "\t" {
+        " ".repeat(grapheme_width_at(grapheme, position, tab_mode))
+    } else {
+        grapheme.to_string()
     }
 }
 
@@ -1622,6 +1635,28 @@ mod tests {
         assert_eq!(positions[0].original, "👍🏽");
         assert_eq!(positions[0].next_original, "x");
         assert_eq!(positions[0].original_width, 2);
+    }
+
+    #[test]
+    fn hint_positions_restore_expanded_tabs() {
+        let panes = vec![pane(&["a\tb"])];
+        let positions = hint_positions(
+            &panes,
+            &[HintTarget {
+                hint: "a".into(),
+                target: Match {
+                    pane_index: 0,
+                    line_no: 0,
+                    visual_col: 1,
+                },
+            }],
+            TabMode::PositionAware,
+        );
+
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].original, "       ");
+        assert_eq!(positions[0].next_original, "b");
+        assert_eq!(positions[0].original_width, 7);
     }
 
     #[test]
