@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window with easymotion-style hints. `Prefix+s` starts one-character motion,
   and `@tmux_history_finder_motion2_key` can enable two-character motion.
 
+### Changed
+- Motion overlays now render in a borderless tmux popup instead of a temporary
+  tmux window.
+
+### Fixed
+- Motion hints can grow beyond two characters, so common matches no longer
+  silently drop distant targets.
+- Motion overlays restore tab cells as expanded screen spaces after hint
+  filtering.
+
 ## [0.4.1] - 2026-06-22
 
 ### Changed

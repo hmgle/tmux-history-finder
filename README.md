@@ -176,6 +176,10 @@ Supported values:
 
 CLI flags override configuration for that run.
 
+Motion hints use the configured characters as a prefix-free key set. When a
+common match produces more targets than one- or two-character hints can cover,
+farther targets use longer hints instead of being dropped.
+
 When `prompt_query` is enabled for the tmux binding, pressing the launch key
 opens a tmux prompt first. Empty input cancels without capturing pane history.
 This is useful for large tmux servers where opening an unfiltered all-pane
@@ -195,7 +199,7 @@ picker would capture and index more scrollback than needed.
 
 Motion mode uses a separate visible-screen path. It captures only the panes in
 the current tmux window, searches their visible text, draws an ANSI hint overlay
-in a temporary tmux window, then selects the target pane and moves the copy-mode
+in a borderless tmux popup, then selects the target pane and moves the copy-mode
 cursor to the selected screen row and column.
 
 ## Development
