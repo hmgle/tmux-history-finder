@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch motion mode in a temporary tmux window.
+# Launch motion mode for the originating tmux client.
 
 set -o pipefail
 
@@ -7,6 +7,7 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kind="${1:-}"
 client_pid="${2:-}"
 target_window="${3:-}"
+target_client="${4:-}"
 
 if [ -z "$kind" ] || [ -z "$client_pid" ] || [ -z "$target_window" ]; then
     exit 0
@@ -17,18 +18,21 @@ case "$kind" in
     *) exit 0 ;;
 esac
 
-shell_quote() {
-    case "$1" in
-        (*[!A-Za-z0-9_./:@%+=-]*|'')
-            printf "'%s'" "$(printf "%s" "$1" | sed "s/'/'\"'\"'/g")"
-            ;;
-        (*)
-            printf "%s" "$1"
-            ;;
-    esac
-}
-
 query_option="@tmux_history_finder_motion_query_$client_pid"
-cmd="$(shell_quote "$CURRENT_DIR/history_finder.sh") motion $(shell_quote "$kind") --query-option $(shell_quote "$query_option") --target-window $(shell_quote "$target_window")"
+if [ -z "$target_client" ]; then
+    target_client=$(tmux list-clients -F '#{client_pid}	#{client_name}' 2>/dev/null |
+        awk -F '\t' -v pid="$client_pid" '$1 == pid { print $2; exit }')
+fi
 
-tmux new-window -d "$cmd"
+cmd=(
+    "$CURRENT_DIR/history_finder.sh"
+    motion
+    "$kind"
+    --query-option "$query_option"
+    --target-window "$target_window"
+)
+if [ -n "$target_client" ]; then
+    cmd+=(--target-client "$target_client")
+fi
+
+exec "${cmd[@]}"

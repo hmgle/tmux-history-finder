@@ -10,7 +10,7 @@ use clap::{Args, ValueEnum};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{config::Config, tmux, types::CaseMode};
+use crate::{config::Config, tmux, types::CaseMode, util::shell_quote};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum MotionKind {
@@ -23,6 +23,13 @@ impl MotionKind {
         match self {
             Self::S => 1,
             Self::S2 => 2,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::S => "s",
+            Self::S2 => "s2",
         }
     }
 }
@@ -39,6 +46,10 @@ pub struct MotionArgs {
     pub query_option: Option<String>,
     #[arg(long = "target-window", hide = true)]
     pub target_window: Option<String>,
+    #[arg(long = "target-client", hide = true)]
+    pub target_client: Option<String>,
+    #[arg(long = "overlay", hide = true)]
+    pub overlay: bool,
     #[arg(long = "case", value_enum)]
     pub case_mode: Option<CaseMode>,
     #[arg(long = "smartsign")]
@@ -62,8 +73,10 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
     let Some(pattern) = resolve_pattern(&args, args.kind.pattern_len()) else {
         return Ok(());
     };
+    let target_window = resolve_target_window(args.target_window.as_deref());
+    let target_client = resolve_target_client(args.target_client.as_deref());
 
-    let panes = init_panes(args.target_window.as_deref())?;
+    let panes = init_panes(target_window.as_deref())?;
     if panes.is_empty() {
         tmux::display_message("tmux-history-finder motion: no visible panes");
         return Ok(());
@@ -81,8 +94,21 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
         return Ok(());
     }
     if matches.len() == 1 {
-        move_to_match(&panes, &matches[0], motion_config.tab_mode)?;
+        move_to_match(
+            &panes,
+            &matches[0],
+            motion_config.tab_mode,
+            target_client.as_deref(),
+        )?;
         return Ok(());
+    }
+    if !args.overlay {
+        return run_popup(
+            &args,
+            &pattern,
+            target_window.as_deref(),
+            target_client.as_deref(),
+        );
     }
 
     let current = panes
@@ -100,13 +126,13 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    let (client_width, client_height) = client_size()?;
-    let terminal_height = client_height.saturating_sub(1);
+    let (window_width, window_height) = window_size(target_window.as_deref())?;
+    let terminal_height = window_height;
     let max_x = panes
         .iter()
         .map(|pane| pane.start_x + pane.width)
         .max()
-        .unwrap_or(client_width);
+        .unwrap_or(window_width);
     let mut screen = AnsiScreen::new(&motion_config);
     screen.init()?;
     let result = run_overlay(
@@ -116,6 +142,7 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
         &hint_mapping,
         max_x,
         terminal_height,
+        target_client.as_deref(),
         &motion_config,
     );
     screen.cleanup()?;
@@ -145,6 +172,90 @@ fn resolve_pattern(args: &MotionArgs, len: usize) -> Option<String> {
         .take(len)
         .collect();
     (!pattern.is_empty()).then_some(pattern)
+}
+
+fn resolve_target_window(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| tmux::try_stdout(["display-message", "-p", "#{window_id}"]))
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_target_client(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| tmux::try_stdout(["display-message", "-p", "#{client_name}"]))
+        .filter(|value| !value.is_empty())
+}
+
+fn run_popup(
+    args: &MotionArgs,
+    pattern: &str,
+    target_window: Option<&str>,
+    target_client: Option<&str>,
+) -> Result<()> {
+    let target_window = target_window.context("motion target window not found")?;
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    tmux::run(popup_command(
+        exe.to_string_lossy().as_ref(),
+        args,
+        pattern,
+        target_window,
+        target_client,
+    ))
+}
+
+fn popup_command(
+    exe: &str,
+    args: &MotionArgs,
+    pattern: &str,
+    target_window: &str,
+    target_client: Option<&str>,
+) -> Vec<String> {
+    let mut command = vec![
+        shell_quote(exe),
+        "motion".into(),
+        args.kind.as_str().into(),
+        "--query".into(),
+        shell_quote(pattern),
+        "--target-window".into(),
+        shell_quote(target_window),
+        "--overlay".into(),
+    ];
+    if let Some(target_client) = target_client {
+        command.push("--target-client".into());
+        command.push(shell_quote(target_client));
+    }
+    if let Some(case_mode) = args.case_mode {
+        command.push("--case".into());
+        command.push(case_mode.to_string());
+    }
+    if args.smartsign {
+        command.push("--smartsign".into());
+    }
+    if args.no_smartsign {
+        command.push("--no-smartsign".into());
+    }
+
+    let mut popup = vec![
+        "display-popup".to_string(),
+        "-E".to_string(),
+        "-B".to_string(),
+        "-w".to_string(),
+        "100%".to_string(),
+        "-h".to_string(),
+        "100%".to_string(),
+        "-t".to_string(),
+        target_window.to_string(),
+    ];
+    if let Some(target_client) = target_client {
+        popup.push("-c".to_string());
+        popup.push(target_client.to_string());
+    }
+    popup.push(command.join(" "));
+    popup
 }
 
 #[derive(Clone, Debug)]
@@ -388,12 +499,21 @@ fn capture_visible_pane(pane: &Pane) -> Result<Vec<String>> {
         .collect())
 }
 
-fn client_size() -> Result<(usize, usize)> {
-    let output = tmux::stdout(["display-message", "-p", "#{client_width},#{client_height}"])?;
+fn window_size(target_window: Option<&str>) -> Result<(usize, usize)> {
+    let mut args: Vec<OsString> = vec![
+        "display-message".into(),
+        "-p".into(),
+        "#{window_width},#{window_height}".into(),
+    ];
+    if let Some(target_window) = target_window {
+        args.push("-t".into());
+        args.push(target_window.into());
+    }
+    let output = tmux::stdout(args)?;
     let (width, height) = output
         .trim()
         .split_once(',')
-        .context("malformed tmux client size")?;
+        .context("malformed tmux window size")?;
     Ok((parse_usize(width), parse_usize(height)))
 }
 
@@ -404,11 +524,11 @@ fn run_overlay(
     hint_mapping: &[HintTarget],
     max_x: usize,
     terminal_height: usize,
+    target_client: Option<&str>,
     config: &MotionConfig,
 ) -> Result<()> {
     draw_all_panes(screen, panes, max_x, terminal_height, config)?;
     draw_all_hints(screen, positions, terminal_height)?;
-    select_current_window();
 
     let hints_chars: HashSet<char> = config.hints.chars().collect();
     let mut key_sequence = String::new();
@@ -424,25 +544,13 @@ fn run_overlay(
             .find(|target| target.hint == key_sequence)
             .map(|target| &target.target)
         {
-            move_to_match(panes, target, config.tab_mode)?;
+            move_to_match(panes, target, config.tab_mode, target_client)?;
             return Ok(());
         }
         if key_sequence.chars().count() >= 2 {
             return Ok(());
         }
         update_hints_display(screen, positions, &key_sequence)?;
-    }
-}
-
-fn select_current_window() {
-    let mut args = vec!["display-message".to_string(), "-p".to_string()];
-    if let Ok(pane) = std::env::var("TMUX_PANE") {
-        args.push("-t".to_string());
-        args.push(pane);
-    }
-    args.push("#{window_id}".to_string());
-    if let Some(window_id) = tmux::try_stdout(args).filter(|value| !value.is_empty()) {
-        tmux::run_ignore(["select-window", "-t", window_id.as_str()]);
     }
 }
 
@@ -581,7 +689,12 @@ fn update_hints_display(
     screen.refresh()
 }
 
-fn move_to_match(panes: &[Pane], target: &Match, tab_mode: TabMode) -> Result<()> {
+fn move_to_match(
+    panes: &[Pane],
+    target: &Match,
+    tab_mode: TabMode,
+    target_client: Option<&str>,
+) -> Result<()> {
     let pane = panes
         .get(target.pane_index)
         .context("motion target pane not found")?;
@@ -590,11 +703,26 @@ fn move_to_match(panes: &[Pane], target: &Match, tab_mode: TabMode) -> Result<()
         .get(target.line_no)
         .context("motion target line not found")?;
     let true_col = true_position(line, target.visual_col, tab_mode);
-    move_cursor(pane, target.line_no, true_col)
+    move_cursor(pane, target.line_no, true_col, target_client)
 }
 
-fn move_cursor(pane: &Pane, line_no: usize, true_col: usize) -> Result<()> {
-    tmux::run(["select-window", "-t", pane.window_id.as_str()])?;
+fn move_cursor(
+    pane: &Pane,
+    line_no: usize,
+    true_col: usize,
+    target_client: Option<&str>,
+) -> Result<()> {
+    if let Some(target_client) = target_client {
+        tmux::run([
+            "switch-client",
+            "-c",
+            target_client,
+            "-t",
+            pane.window_id.as_str(),
+        ])?;
+    } else {
+        tmux::run(["select-window", "-t", pane.window_id.as_str()])?;
+    }
     tmux::run(["select-pane", "-t", pane.pane_id.as_str()])?;
     if !pane.copy_mode {
         tmux::run(["copy-mode", "-t", pane.pane_id.as_str()])?;
@@ -1091,8 +1219,8 @@ fn set_termios(fd: i32, termios: &libc::termios) -> Result<()> {
 mod tests {
     use super::{
         assign_hints_by_distance, expand_tabs, find_matches, generate_hints, hint_positions,
-        move_cursor, smartsign_patterns, string_width, tmux_tab_mode_from_version, true_position,
-        visual_slice, HintTarget, Match, Pane, TabMode,
+        move_cursor, popup_command, smartsign_patterns, string_width, tmux_tab_mode_from_version,
+        true_position, visual_slice, HintTarget, Match, MotionArgs, MotionKind, Pane, TabMode,
     };
     use crate::{tmux, types::CaseMode};
     use std::{
@@ -1486,6 +1614,40 @@ mod tests {
     }
 
     #[test]
+    fn popup_command_targets_originating_client() {
+        let args = MotionArgs {
+            kind: MotionKind::S,
+            pattern: None,
+            query: None,
+            query_option: None,
+            target_window: None,
+            target_client: None,
+            overlay: false,
+            case_mode: Some(CaseMode::Sensitive),
+            smartsign: true,
+            no_smartsign: false,
+        };
+
+        let command = popup_command("/tmp/thf binary", &args, "a'b", "@1", Some("/dev/pts/1"));
+
+        assert_eq!(command[0], "display-popup");
+        assert!(command.contains(&"-E".to_string()));
+        assert!(command.contains(&"-B".to_string()));
+        assert!(command.contains(&"-c".to_string()));
+        assert!(command.contains(&"/dev/pts/1".to_string()));
+        assert!(command.contains(&"@1".to_string()));
+        assert!(!command.iter().any(|part| part == "new-window"));
+        let shell_command = command.last().expect("popup shell command");
+        assert!(shell_command.contains("'/tmp/thf binary'"));
+        assert!(shell_command.contains("--query 'a'\"'\"'b'"));
+        assert!(shell_command.contains("--target-window @1"));
+        assert!(shell_command.contains("--target-client /dev/pts/1"));
+        assert!(shell_command.contains("--overlay"));
+        assert!(shell_command.contains("--case sensitive"));
+        assert!(shell_command.contains("--smartsign"));
+    }
+
+    #[test]
     fn move_cursor_positions_same_pane() {
         let _lock = TMUX_ENV_LOCK.lock().unwrap();
         let Some(server) =
@@ -1497,7 +1659,7 @@ mod tests {
         let lines = server.wait_for_lines(&server.pane_id, "line2_target");
         let pane = server.pane(&server.pane_id, lines);
 
-        move_cursor(&pane, 2, 7).expect("same-pane cursor move");
+        move_cursor(&pane, 2, 7, None).expect("same-pane cursor move");
 
         assert_eq!(server.copy_cursor(&server.pane_id), (7, 2));
     }
@@ -1514,7 +1676,7 @@ mod tests {
         let lines = server.wait_for_lines(&pane2, "line1_target");
         let pane = server.pane(&pane2, lines);
 
-        move_cursor(&pane, 1, 6).expect("cross-pane cursor move");
+        move_cursor(&pane, 1, 6, None).expect("cross-pane cursor move");
 
         assert_eq!(server.active_pane(), pane2);
         assert_eq!(server.copy_cursor(&pane.pane_id), (6, 1));
@@ -1535,7 +1697,7 @@ mod tests {
             .expect("target line");
         let pane = server.pane(&server.pane_id, lines);
 
-        move_cursor(&pane, target_line, 0).expect("leading-empty cursor move");
+        move_cursor(&pane, target_line, 0, None).expect("leading-empty cursor move");
 
         assert_eq!(server.copy_cursor(&server.pane_id), (0, target_line));
     }
