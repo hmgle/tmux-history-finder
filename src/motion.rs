@@ -107,6 +107,7 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
             &args,
             &pattern,
             target_window.as_deref(),
+            target_popup_pane(&panes).as_deref(),
             target_client.as_deref(),
         );
     }
@@ -196,17 +197,28 @@ fn run_popup(
     args: &MotionArgs,
     pattern: &str,
     target_window: Option<&str>,
+    target_pane: Option<&str>,
     target_client: Option<&str>,
 ) -> Result<()> {
     let target_window = target_window.context("motion target window not found")?;
+    let target_pane = target_pane.context("motion target pane not found")?;
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     tmux::run(popup_command(
         exe.to_string_lossy().as_ref(),
         args,
         pattern,
         target_window,
+        target_pane,
         target_client,
     ))
+}
+
+fn target_popup_pane(panes: &[Pane]) -> Option<String> {
+    panes
+        .iter()
+        .find(|pane| pane.active)
+        .or_else(|| panes.first())
+        .map(|pane| pane.pane_id.clone())
 }
 
 fn popup_command(
@@ -214,6 +226,7 @@ fn popup_command(
     args: &MotionArgs,
     pattern: &str,
     target_window: &str,
+    target_pane: &str,
     target_client: Option<&str>,
 ) -> Vec<String> {
     let mut command = vec![
@@ -250,7 +263,7 @@ fn popup_command(
         "-h".to_string(),
         "100%".to_string(),
         "-t".to_string(),
-        target_window.to_string(),
+        target_pane.to_string(),
     ];
     if let Some(target_client) = target_client {
         popup.push("-c".to_string());
@@ -502,15 +515,12 @@ fn capture_visible_pane(pane: &Pane) -> Result<Vec<String>> {
 }
 
 fn window_size(target_window: Option<&str>) -> Result<(usize, usize)> {
-    let mut args: Vec<OsString> = vec![
-        "display-message".into(),
-        "-p".into(),
-        "#{window_width},#{window_height}".into(),
-    ];
+    let mut args: Vec<OsString> = vec!["display-message".into(), "-p".into()];
     if let Some(target_window) = target_window {
         args.push("-t".into());
         args.push(target_window.into());
     }
+    args.push("#{window_width},#{window_height}".into());
     let output = tmux::stdout(args)?;
     let (width, height) = output
         .trim()
@@ -1708,14 +1718,22 @@ mod tests {
             no_smartsign: false,
         };
 
-        let command = popup_command("/tmp/thf binary", &args, "a'b", "@1", Some("/dev/pts/1"));
+        let command = popup_command(
+            "/tmp/thf binary",
+            &args,
+            "a'b",
+            "@1",
+            "%1",
+            Some("/dev/pts/1"),
+        );
 
         assert_eq!(command[0], "display-popup");
         assert!(command.contains(&"-E".to_string()));
         assert!(command.contains(&"-B".to_string()));
         assert!(command.contains(&"-c".to_string()));
         assert!(command.contains(&"/dev/pts/1".to_string()));
-        assert!(command.contains(&"@1".to_string()));
+        assert!(command.contains(&"%1".to_string()));
+        assert!(!command[..command.len() - 1].contains(&"@1".to_string()));
         assert!(!command.iter().any(|part| part == "new-window"));
         let shell_command = command.last().expect("popup shell command");
         assert!(shell_command.contains("'/tmp/thf binary'"));
