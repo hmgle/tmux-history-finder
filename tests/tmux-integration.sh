@@ -31,6 +31,25 @@ wait_for_text() {
     return 1
 }
 
+wait_for_format() {
+    local pane="$1"
+    local format="$2"
+    local expected="$3"
+    local description="$4"
+    local actual=""
+    local remaining=100
+    while [ "$remaining" -gt 0 ]; do
+        actual="$(tmux -L "$SOCKET" display-message -p -t "$pane" "$format")"
+        if [ "$actual" = "$expected" ]; then
+            return 0
+        fi
+        sleep 0.02
+        remaining=$((remaining - 1))
+    done
+    echo "tmux integration: $description: expected '$expected', got '$actual'" >&2
+    return 1
+}
+
 assert_eq() {
     local actual="$1"
     local expected="$2"
@@ -82,8 +101,7 @@ record="$(printf '%s\n' "$visible_capture" | awk -F '\t' '$6 == "DUPLICATE" { pr
 line_no="$(printf '%s\n' "$record" | awk -F '\t' '{print $5}')"
 assert_gt "$line_no" "$history_size" "visible line is outside scrollback"
 THF_TMUX_ARGS="-L $SOCKET" "$BIN" action --action jump --record "$record"
-cursor_word="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{copy_cursor_word}')"
-assert_eq "$cursor_word" DUPLICATE "jump cursor word"
+wait_for_format "$pane" '#{copy_cursor_word}' DUPLICATE "jump cursor word"
 scroll_position="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{scroll_position}')"
 assert_le "$scroll_position" 1 "jump scroll position"
 tmux -L "$SOCKET" send-keys -t "$pane" -X cancel
