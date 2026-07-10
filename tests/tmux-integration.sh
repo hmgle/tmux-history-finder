@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${THF_BIN:-$ROOT/target/debug/thf}"
 [ -x "$BIN" ] || { echo "tmux integration: build thf first" >&2; exit 1; }
 
-SOCKET="thf-integration-$$"
+SOCKET="thf-integration-$$-$RANDOM"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/thf-integration.XXXXXX")"
 cleanup() {
     tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
@@ -15,10 +15,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_for_text() {
+    local pane="$1"
+    local needle="$2"
+    local remaining=100
+    while [ "$remaining" -gt 0 ]; do
+        if tmux -L "$SOCKET" capture-pane -p -J -S - -t "$pane" 2>/dev/null |
+            grep -Fq "$needle"; then
+            return 0
+        fi
+        sleep 0.02
+        remaining=$((remaining - 1))
+    done
+    echo "tmux integration: pane $pane did not contain '$needle'" >&2
+    return 1
+}
+
 pane="$(tmux -L "$SOCKET" -f /dev/null new-session -d -x 50 -y 8 -s review \
     -P -F '#{pane_id}' \
     "bash -lc 'for i in \$(seq 1 40); do if [ \"\$i\" = 5 ]; then echo DUPLICATE; else echo hist-\$i; fi; done; echo visible-a; echo DUPLICATE; echo visible-z; sleep 60'")"
-sleep 0.2
+wait_for_text "$pane" visible-z
 history_size="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{history_size}')"
 
 visible_capture="$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" capture --scope pane --no-history -t "$pane")"
@@ -38,7 +54,7 @@ expected_first=$((history_size - 5 + 1))
 
 wrapped_pane="$(tmux -L "$SOCKET" new-session -d -x 10 -y 8 -s wrapped -P -F '#{pane_id}' \
     "bash -lc 'printf \"wrapped-target-long\\n\"; sleep 60'")"
-sleep 0.2
+wait_for_text "$wrapped_pane" wrapped-target-long
 [ "$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" search --scope pane -t "$wrapped_pane" \
     --print wrapped-target-long)" = "wrapped-target-long" ]
 
