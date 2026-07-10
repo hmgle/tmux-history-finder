@@ -58,7 +58,7 @@ Items are ordered by user impact and intended commit sequence.
 
 ## 5. Architecture and tests
 
-- [ ] Split `motion.rs` into capture, matching, hint, rendering, terminal, and
+- [x] Split `motion.rs` into capture, matching, hint, rendering, terminal, and
   navigation modules.
 - [x] Add unit tests for hint termination/prefix freedom, Unicode search,
   configuration errors, fzf statuses, and display sanitization.
