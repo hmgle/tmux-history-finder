@@ -1,12 +1,17 @@
 use std::{
     collections::{BTreeMap, HashSet},
     ffi::OsString,
-    io::{self, Read, Write},
+    fmt::Write as _,
+    fs::File,
+    io::{self, BufReader, BufWriter, Read, Write},
     os::fd::AsRawFd,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
+use serde::{Deserialize, Serialize};
+use tempfile::Builder;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -50,6 +55,8 @@ pub struct MotionArgs {
     pub target_client: Option<String>,
     #[arg(long = "overlay", hide = true)]
     pub overlay: bool,
+    #[arg(long = "snapshot", hide = true)]
+    pub snapshot: Option<PathBuf>,
     #[arg(long = "case", value_enum)]
     pub case_mode: Option<CaseMode>,
     #[arg(long = "smartsign", conflicts_with = "no_smartsign")]
@@ -76,19 +83,25 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
     let target_window = resolve_target_window(args.target_window.as_deref());
     let target_client = resolve_target_client(args.target_client.as_deref());
 
-    let panes = init_panes(target_window.as_deref())?;
+    let (panes, matches) = if let Some(path) = args.snapshot.as_deref() {
+        let snapshot = MotionSnapshot::load(path)?;
+        (snapshot.panes, snapshot.matches)
+    } else {
+        let panes = init_panes(target_window.as_deref())?;
+        let matches = find_matches(
+            &panes,
+            &pattern,
+            motion_config.case_mode,
+            motion_config.smartsign,
+            motion_config.tab_mode,
+        );
+        (panes, matches)
+    };
     if panes.is_empty() {
         tmux::display_message("tmux-history-finder motion: no visible panes");
         return Ok(());
     }
 
-    let matches = find_matches(
-        &panes,
-        &pattern,
-        motion_config.case_mode,
-        motion_config.smartsign,
-        motion_config.tab_mode,
-    );
     if matches.is_empty() {
         tmux::display_message("tmux-history-finder motion: no match");
         return Ok(());
@@ -103,12 +116,22 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
         return Ok(());
     }
     if !args.overlay {
+        let snapshot_file = Builder::new()
+            .prefix("thf_motion.")
+            .suffix(".json")
+            .tempfile()?;
+        MotionSnapshot {
+            panes: panes.clone(),
+            matches: matches.clone(),
+        }
+        .save(snapshot_file.path())?;
         return run_popup(
             &args,
             &pattern,
             target_window.as_deref(),
             target_popup_pane(&panes).as_deref(),
             target_client.as_deref(),
+            snapshot_file.path(),
         );
     }
 
@@ -199,6 +222,7 @@ fn run_popup(
     target_window: Option<&str>,
     target_pane: Option<&str>,
     target_client: Option<&str>,
+    snapshot_path: &Path,
 ) -> Result<()> {
     let target_window = target_window.context("motion target window not found")?;
     let target_pane = target_pane.context("motion target pane not found")?;
@@ -210,6 +234,7 @@ fn run_popup(
         target_window,
         target_pane,
         target_client,
+        snapshot_path,
     ))
 }
 
@@ -228,6 +253,7 @@ fn popup_command(
     target_window: &str,
     target_pane: &str,
     target_client: Option<&str>,
+    snapshot_path: &Path,
 ) -> Vec<String> {
     let mut command = vec![
         shell_quote(exe),
@@ -238,6 +264,8 @@ fn popup_command(
         "--target-window".into(),
         shell_quote(target_window),
         "--overlay".into(),
+        "--snapshot".into(),
+        shell_quote(&snapshot_path.to_string_lossy()),
     ];
     if let Some(target_client) = target_client {
         command.push("--target-client".into());
@@ -358,7 +386,7 @@ fn parse_tmux_major_minor(version: &str) -> Option<(usize, usize)> {
     None
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Pane {
     window_id: String,
     pane_id: String,
@@ -374,7 +402,7 @@ struct Pane {
     lines: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Match {
     pane_index: usize,
     line_no: usize,
@@ -391,11 +419,32 @@ struct HintTarget {
 struct HintPosition {
     screen_y: usize,
     screen_x: usize,
-    pane_right_edge: usize,
-    original_width: usize,
     original: String,
-    next_original: String,
     hint: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MotionSnapshot {
+    panes: Vec<Pane>,
+    matches: Vec<Match>,
+}
+
+impl MotionSnapshot {
+    fn save(&self, path: &Path) -> Result<()> {
+        let file =
+            File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, self)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    fn load(path: &Path) -> Result<Self> {
+        let file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        serde_json::from_reader(BufReader::new(file))
+            .with_context(|| format!("failed to parse {}", path.display()))
+    }
 }
 
 fn init_panes(target_window: Option<&str>) -> Result<Vec<Pane>> {
@@ -558,8 +607,13 @@ fn run_overlay(screen: &mut AnsiScreen, overlay: Overlay<'_>) -> Result<()> {
         .unwrap_or_default();
     let mut key_sequence = String::new();
     let _raw = RawMode::new()?;
+    let mut stdin = io::stdin();
     loop {
-        let ch = read_key(&mut io::stdin())?;
+        let ch = read_key(&mut stdin)?;
+        if ch == '\u{1b}' {
+            drain_pending_input(stdin.as_raw_fd(), 30);
+            return Ok(());
+        }
         if !hints_chars.contains(&ch) {
             return Ok(());
         }
@@ -593,10 +647,11 @@ fn draw_all_panes(
     terminal_height: usize,
     config: &MotionConfig,
 ) -> Result<()> {
-    let mut sorted = panes.to_vec();
-    sorted.sort_by_key(|pane| pane.start_y + pane.height);
+    let mut order: Vec<usize> = (0..panes.len()).collect();
+    order.sort_by_key(|index| panes[*index].start_y + panes[*index].height);
 
-    for pane in sorted {
+    for index in order {
+        let pane = &panes[index];
         let visible_height = pane
             .height
             .min(terminal_height.saturating_sub(pane.start_y));
@@ -648,12 +703,6 @@ fn draw_all_hints(
                 Attr::Hint1,
             )?;
         }
-        if let Some(second) = hint_chars.next() {
-            let next_x = position.screen_x + position.original_width;
-            if next_x < position.pane_right_edge {
-                screen.addstr(position.screen_y, next_x, &second.to_string(), Attr::Hint2)?;
-            }
-        }
     }
     screen.refresh()
 }
@@ -664,19 +713,6 @@ fn update_hints_display(
     current_key: &str,
 ) -> Result<()> {
     for position in positions {
-        let next_x = position.screen_x + position.original_width;
-        let restore_next = || {
-            if next_x < position.pane_right_edge {
-                if position.next_original.is_empty() {
-                    " ".to_string()
-                } else {
-                    position.next_original.clone()
-                }
-            } else {
-                String::new()
-            }
-        };
-
         if !position.hint.starts_with(current_key) {
             screen.addstr(
                 position.screen_y,
@@ -684,20 +720,12 @@ fn update_hints_display(
                 &position.original,
                 Attr::Normal,
             )?;
-            let next = restore_next();
-            if !next.is_empty() {
-                screen.addstr(position.screen_y, next_x, &next, Attr::Normal)?;
-            }
             continue;
         }
 
         let current_len = current_key.chars().count();
         if position.hint.chars().count() > current_len {
             if let Some(next_hint) = position.hint.chars().nth(current_len) {
-                let next = restore_next();
-                if !next.is_empty() {
-                    screen.addstr(position.screen_y, next_x, &next, Attr::Normal)?;
-                }
                 screen.addstr(
                     position.screen_y,
                     position.screen_x,
@@ -712,10 +740,6 @@ fn update_hints_display(
                 &position.original,
                 Attr::Normal,
             )?;
-            let next = restore_next();
-            if !next.is_empty() {
-                screen.addstr(position.screen_y, next_x, &next, Attr::Normal)?;
-            }
         }
     }
     screen.refresh()
@@ -735,7 +759,7 @@ fn move_to_match(
         .get(target.line_no)
         .context("motion target line not found")?;
     let true_col = true_position(line, target.visual_col, tab_mode);
-    move_cursor(pane, target.line_no, true_col, target_client)
+    move_cursor(pane, target.line_no, true_col, target_client, tab_mode)
 }
 
 fn move_cursor(
@@ -743,6 +767,7 @@ fn move_cursor(
     line_no: usize,
     true_col: usize,
     target_client: Option<&str>,
+    tab_mode: TabMode,
 ) -> Result<()> {
     if let Some(target_client) = target_client {
         tmux::run([
@@ -762,17 +787,19 @@ fn move_cursor(
     send_copy_command(pane, &["top-line"])?;
     send_copy_command(pane, &["start-of-line"])?;
 
-    let first_non_empty = pane
-        .lines
-        .iter()
-        .position(|line| !line.is_empty())
-        .unwrap_or_default();
     let mut rows_remaining = line_no;
-    if first_non_empty > 0 && first_non_empty <= line_no {
-        let first = first_non_empty.to_string();
-        send_copy_command(pane, &["-N", first.as_str(), "cursor-down"])?;
-        send_copy_command(pane, &["start-of-line"])?;
-        rows_remaining -= first_non_empty;
+    if tab_mode == TabMode::PositionAware {
+        let first_non_empty = pane
+            .lines
+            .iter()
+            .position(|line| !line.is_empty())
+            .unwrap_or_default();
+        if first_non_empty > 0 && first_non_empty <= line_no {
+            let first = first_non_empty.to_string();
+            send_copy_command(pane, &["-N", first.as_str(), "cursor-down"])?;
+            send_copy_command(pane, &["start-of-line"])?;
+            rows_remaining -= first_non_empty;
+        }
     }
     if rows_remaining > 0 {
         let rows = rows_remaining.to_string();
@@ -800,31 +827,56 @@ fn find_matches(
 ) -> Vec<Match> {
     let patterns = smartsign_patterns(pattern, smartsign);
     let sensitive = case_mode.is_sensitive_for(pattern);
-    let pattern_len = pattern.chars().count();
+    let pattern_graphemes: Vec<Vec<String>> = patterns
+        .iter()
+        .map(|candidate| {
+            candidate
+                .graphemes(true)
+                .map(|grapheme| {
+                    if sensitive {
+                        grapheme.to_string()
+                    } else {
+                        grapheme.to_lowercase()
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let pattern_len = pattern_graphemes.first().map(Vec::len).unwrap_or_default();
+    if pattern_len == 0 {
+        return Vec::new();
+    }
     let mut matches = Vec::new();
 
     for (pane_index, pane) in panes.iter().enumerate() {
         for (line_no, line) in pane.lines.iter().enumerate() {
-            let chars: Vec<char> = line.chars().collect();
-            if chars.len() < pattern_len {
+            let mut entries = Vec::<(usize, String)>::new();
+            let mut visual_col = 0;
+            for grapheme in line.graphemes(true) {
+                entries.push((
+                    visual_col,
+                    if sensitive {
+                        grapheme.to_string()
+                    } else {
+                        grapheme.to_lowercase()
+                    },
+                ));
+                visual_col += grapheme_width_at(grapheme, visual_col, tab_mode);
+            }
+            if entries.len() < pattern_len {
                 continue;
             }
-            let metrics = line_metrics(line, tab_mode);
-            for idx in 0..=chars.len() - pattern_len {
-                let end = idx + pattern_len;
-                if !metrics.is_boundary(idx) || !metrics.is_boundary(end) {
-                    continue;
-                }
-
-                let substring: String = chars[idx..idx + pattern_len].iter().collect();
-                if patterns
-                    .iter()
-                    .any(|candidate| text_eq(&substring, candidate, sensitive))
-                {
+            for start in 0..=entries.len() - pattern_len {
+                if pattern_graphemes.iter().any(|candidate| {
+                    candidate
+                        .iter()
+                        .zip(&entries[start..start + pattern_len])
+                        .all(|(expected, (_, actual))| expected == actual)
+                }) {
                     matches.push(Match {
                         pane_index,
                         line_no,
-                        visual_col: metrics.visual_col(idx),
+                        visual_col: entries[start].0,
                     });
                 }
             }
@@ -832,14 +884,6 @@ fn find_matches(
     }
 
     matches
-}
-
-fn text_eq(left: &str, right: &str, sensitive: bool) -> bool {
-    if sensitive {
-        left == right
-    } else {
-        left.to_lowercase() == right.to_lowercase()
-    }
 }
 
 fn smartsign_patterns(pattern: &str, enabled: bool) -> Vec<String> {
@@ -896,48 +940,6 @@ fn smartsign_char(ch: char) -> Option<char> {
         '.' => Some('>'),
         '/' => Some('?'),
         _ => None,
-    }
-}
-
-#[derive(Clone, Debug)]
-struct LineMetrics {
-    boundaries: Vec<bool>,
-    visual_cols: Vec<usize>,
-}
-
-impl LineMetrics {
-    fn is_boundary(&self, char_index: usize) -> bool {
-        self.boundaries.get(char_index).copied().unwrap_or(false)
-    }
-
-    fn visual_col(&self, char_index: usize) -> usize {
-        self.visual_cols
-            .get(char_index)
-            .copied()
-            .unwrap_or_default()
-    }
-}
-
-fn line_metrics(line: &str, tab_mode: TabMode) -> LineMetrics {
-    let char_len = line.chars().count();
-    let mut boundaries = vec![false; char_len + 1];
-    let mut visual_cols = vec![0; char_len + 1];
-    let mut char_pos = 0;
-    let mut visual_pos = 0;
-
-    boundaries[0] = true;
-    for grapheme in line.graphemes(true) {
-        boundaries[char_pos] = true;
-        visual_cols[char_pos] = visual_pos;
-        char_pos += grapheme.chars().count();
-        visual_pos += grapheme_width_at(grapheme, visual_pos, tab_mode);
-        boundaries[char_pos] = true;
-        visual_cols[char_pos] = visual_pos;
-    }
-
-    LineMetrics {
-        boundaries,
-        visual_cols,
     }
 }
 
@@ -1020,20 +1022,22 @@ fn hint_positions(
             let target = &entry.target;
             let pane = panes.get(target.pane_index)?;
             let line = pane.lines.get(target.line_no)?;
+            if target.visual_col >= pane.width {
+                return None;
+            }
             let true_col = true_position(line, target.visual_col, tab_mode);
-            let (original, next_original) = grapheme_at_char_index(line, true_col)?;
+            let (original, _) = grapheme_at_char_index(line, true_col)?;
+            let remaining_width = pane.width - target.visual_col;
             let original_width = grapheme_width_at(original, target.visual_col, tab_mode);
-            let original = display_grapheme(original, target.visual_col, tab_mode);
-            let next_original = next_original
-                .map(|next| display_grapheme(next, target.visual_col + original_width, tab_mode))
-                .unwrap_or_else(|| " ".to_string());
+            let original = if original_width <= remaining_width {
+                display_grapheme(original, target.visual_col, tab_mode)
+            } else {
+                " ".to_string()
+            };
             Some(HintPosition {
                 screen_y: pane.start_y + target.line_no,
                 screen_x: pane.start_x + target.visual_col,
-                pane_right_edge: pane.start_x + pane.width,
-                original_width,
                 original,
-                next_original,
                 hint: entry.hint.clone(),
             })
         })
@@ -1149,6 +1153,8 @@ struct AnsiScreen {
     dim: String,
     hint1: String,
     hint2: String,
+    buffer: String,
+    active: bool,
 }
 
 impl AnsiScreen {
@@ -1157,18 +1163,28 @@ impl AnsiScreen {
             dim: format!("\x1b[{}m", config.dim),
             hint1: format!("\x1b[{}m", config.hint1_fg),
             hint2: format!("\x1b[{}m", config.hint2_fg),
+            buffer: String::with_capacity(4096),
+            active: false,
         }
     }
 
     fn init(&mut self) -> Result<()> {
-        print!("\x1b[?25l\x1b[2J");
-        io::stdout().flush()?;
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(b"\x1b[?25l\x1b[2J")?;
+        stdout.flush()?;
+        self.active = true;
         Ok(())
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        print!("\x1b[0m\x1b[?25h");
-        io::stdout().flush()?;
+        let mut stdout = io::stdout().lock();
+        if !self.buffer.is_empty() {
+            stdout.write_all(self.buffer.as_bytes())?;
+            self.buffer.clear();
+        }
+        stdout.write_all(b"\x1b[0m\x1b[?25h")?;
+        stdout.flush()?;
+        self.active = false;
         Ok(())
     }
 
@@ -1180,16 +1196,37 @@ impl AnsiScreen {
             Attr::Hint2 => &self.hint2,
         };
         if attr.is_empty() {
-            print!("\x1b[{};{}H{}", y + 1, x + 1, text);
+            write!(self.buffer, "\x1b[{};{}H{}", y + 1, x + 1, text)?;
         } else {
-            print!("\x1b[{};{}H{}{}\x1b[0m", y + 1, x + 1, attr, text);
+            write!(
+                self.buffer,
+                "\x1b[{};{}H{}{}\x1b[0m",
+                y + 1,
+                x + 1,
+                attr,
+                text
+            )?;
         }
         Ok(())
     }
 
     fn refresh(&mut self) -> Result<()> {
-        io::stdout().flush()?;
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(self.buffer.as_bytes())?;
+        stdout.flush()?;
+        self.buffer.clear();
         Ok(())
+    }
+}
+
+impl Drop for AnsiScreen {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.cleanup();
+        }
     }
 }
 
@@ -1203,7 +1240,7 @@ impl RawMode {
         let fd = io::stdin().as_raw_fd();
         let original = termios_for_fd(fd)?;
         let mut raw = original;
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        unsafe { libc::cfmakeraw(&mut raw) };
         raw.c_cc[libc::VMIN] = 1;
         raw.c_cc[libc::VTIME] = 0;
         set_termios(fd, &raw)?;
@@ -1220,9 +1257,6 @@ impl Drop for RawMode {
 fn read_key(reader: &mut impl Read) -> Result<char> {
     let mut first = [0_u8; 1];
     reader.read_exact(&mut first)?;
-    if first[0] == 0x03 {
-        anyhow::bail!("cancelled");
-    }
     let width = utf8_char_width(first[0]).context("invalid utf-8 input")?;
     let mut bytes = vec![first[0]];
     if width > 1 {
@@ -1232,6 +1266,27 @@ fn read_key(reader: &mut impl Read) -> Result<char> {
     }
     let value = std::str::from_utf8(&bytes)?;
     value.chars().next().context("empty key input")
+}
+
+fn drain_pending_input(fd: i32, timeout_ms: i32) {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut remaining = timeout_ms;
+    let mut buffer = [0_u8; 64];
+    while remaining >= 0 {
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, remaining) };
+        if ready <= 0 {
+            break;
+        }
+        let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if read <= 0 {
+            break;
+        }
+        remaining = 0;
+    }
 }
 
 fn utf8_char_width(byte: u8) -> Option<usize> {
@@ -1267,12 +1322,13 @@ mod tests {
         assign_hints_by_distance, expand_tabs, find_matches, generate_hints, hint_positions,
         move_cursor, popup_command, read_key, smartsign_patterns, string_width,
         tmux_tab_mode_from_version, true_position, visual_slice, HintTarget, Match, MotionArgs,
-        MotionKind, Pane, TabMode,
+        MotionKind, MotionSnapshot, Pane, TabMode,
     };
     use crate::{tmux, types::CaseMode};
     use std::{
         env,
         ffi::OsString,
+        path::Path,
         process::Command,
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -1566,6 +1622,30 @@ mod tests {
     }
 
     #[test]
+    fn read_key_returns_ctrl_c_for_graceful_cancellation() {
+        let mut input = [0x03].as_slice();
+        assert_eq!(read_key(&mut input).unwrap(), '\u{3}');
+    }
+
+    #[test]
+    fn motion_snapshot_round_trips() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let snapshot = MotionSnapshot {
+            panes: vec![pane(&["alpha"])],
+            matches: vec![Match {
+                pane_index: 0,
+                line_no: 0,
+                visual_col: 0,
+            }],
+        };
+        snapshot.save(file.path()).unwrap();
+
+        let loaded = MotionSnapshot::load(file.path()).unwrap();
+        assert_eq!(loaded.panes[0].lines, vec!["alpha"]);
+        assert_eq!(loaded.matches[0].visual_col, 0);
+    }
+
+    #[test]
     fn expands_smartsign_patterns() {
         assert_eq!(smartsign_patterns("3", true), vec!["3", "#"]);
         assert_eq!(smartsign_patterns("3x", true), vec!["3x", "#x"]);
@@ -1654,8 +1734,6 @@ mod tests {
 
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0].original, "👍🏽");
-        assert_eq!(positions[0].next_original, "x");
-        assert_eq!(positions[0].original_width, 2);
     }
 
     #[test]
@@ -1676,8 +1754,26 @@ mod tests {
 
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0].original, "       ");
-        assert_eq!(positions[0].next_original, "b");
-        assert_eq!(positions[0].original_width, 7);
+    }
+
+    #[test]
+    fn hint_positions_do_not_restore_wide_cells_across_pane_edges() {
+        let mut pane = pane(&["你"]);
+        pane.width = 1;
+        let positions = hint_positions(
+            &[pane],
+            &[HintTarget {
+                hint: "a".into(),
+                target: Match {
+                    pane_index: 0,
+                    line_no: 0,
+                    visual_col: 0,
+                },
+            }],
+            TabMode::PositionAware,
+        );
+
+        assert_eq!(positions[0].original, " ");
     }
 
     #[test]
@@ -1724,6 +1820,7 @@ mod tests {
             target_window: None,
             target_client: None,
             overlay: false,
+            snapshot: None,
             case_mode: Some(CaseMode::Sensitive),
             smartsign: true,
             no_smartsign: false,
@@ -1736,6 +1833,7 @@ mod tests {
             "@1",
             "%1",
             Some("/dev/pts/1"),
+            Path::new("/tmp/motion snapshot.json"),
         );
 
         assert_eq!(command[0], "display-popup");
@@ -1752,6 +1850,7 @@ mod tests {
         assert!(shell_command.contains("--target-window @1"));
         assert!(shell_command.contains("--target-client /dev/pts/1"));
         assert!(shell_command.contains("--overlay"));
+        assert!(shell_command.contains("--snapshot '/tmp/motion snapshot.json'"));
         assert!(shell_command.contains("--case sensitive"));
         assert!(shell_command.contains("--smartsign"));
     }
@@ -1768,7 +1867,7 @@ mod tests {
         let lines = server.wait_for_lines(&server.pane_id, "line2_target");
         let pane = server.pane(&server.pane_id, lines);
 
-        move_cursor(&pane, 2, 7, None).expect("same-pane cursor move");
+        move_cursor(&pane, 2, 7, None, TabMode::PositionAware).expect("same-pane cursor move");
 
         assert_eq!(server.copy_cursor(&server.pane_id), (7, 2));
     }
@@ -1785,7 +1884,7 @@ mod tests {
         let lines = server.wait_for_lines(&pane2, "line1_target");
         let pane = server.pane(&pane2, lines);
 
-        move_cursor(&pane, 1, 6, None).expect("cross-pane cursor move");
+        move_cursor(&pane, 1, 6, None, TabMode::PositionAware).expect("cross-pane cursor move");
 
         assert_eq!(server.active_pane(), pane2);
         assert_eq!(server.copy_cursor(&pane.pane_id), (6, 1));
@@ -1806,7 +1905,8 @@ mod tests {
             .expect("target line");
         let pane = server.pane(&server.pane_id, lines);
 
-        move_cursor(&pane, target_line, 0, None).expect("leading-empty cursor move");
+        move_cursor(&pane, target_line, 0, None, TabMode::PositionAware)
+            .expect("leading-empty cursor move");
 
         assert_eq!(server.copy_cursor(&server.pane_id), (0, target_line));
     }

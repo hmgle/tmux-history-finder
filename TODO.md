@@ -37,9 +37,9 @@ Items are ordered by user impact and intended commit sequence.
 - [x] Store pane snapshots separately so fzf preview loads only one pane.
 - [x] Stream legacy TSV output to the destination writer with bounded memory.
 - [ ] Avoid rebuilding action targets and clipboard discovery per selected row.
-- [ ] Avoid duplicate capture/search work when motion opens its popup.
-- [ ] Sort pane references rather than cloning pane contents.
-- [ ] Batch ANSI screen writes once per refresh.
+- [x] Avoid duplicate capture/search work when motion opens its popup.
+- [x] Sort pane references rather than cloning pane contents.
+- [x] Batch ANSI screen writes once per refresh.
 
 ## 4. Installer, shell, and terminal safety
 
@@ -52,9 +52,9 @@ Items are ordered by user impact and intended commit sequence.
   or quotes.
 - [x] Sanitize fzf display fields and remove unnecessary ANSI interpretation.
 - [x] Validate motion hints, border cells, and SGR configuration.
-- [ ] Use a real raw terminal mode that allows graceful Ctrl-C cleanup.
-- [ ] Drain trailing escape-sequence bytes on overlay cancellation.
-- [ ] Prevent hint restoration and drawing from crossing pane boundaries.
+- [x] Use a real raw terminal mode that allows graceful Ctrl-C cleanup.
+- [x] Drain trailing escape-sequence bytes on overlay cancellation.
+- [x] Prevent hint restoration and drawing from crossing pane boundaries.
 
 ## 5. Architecture and tests
 
