@@ -34,14 +34,17 @@ The wrapper `history_finder.sh` resolves the `thf` backend in this order:
 
 1. `$THF_BIN`, if set to an executable.
 2. A locally built binary (`target/release/thf` or `target/debug/thf`).
-3. A previously downloaded binary (`bin/thf`).
+3. A current, previously downloaded binary (`bin/thf`).
 4. `cargo run`, when a Rust toolchain is present (source checkouts/development).
 5. Otherwise, a prebuilt release binary is downloaded for your platform via
    `scripts/install-binary.sh` (checksum-verified) into `bin/thf`.
 
-So a plain TPM install needs no toolchain: the first launch fetches the matching
-prebuilt binary and caches it. To prefetch it explicitly (or in a post-install
-hook):
+Local and downloaded binaries are used only when their version matches
+`Cargo.toml` and they are newer than the Rust sources. A plain tagged TPM
+install therefore needs no toolchain: the first launch fetches the matching
+prebuilt binary and caches it. Untagged source checkouts are never paired with a
+release binary automatically; build those with Cargo instead. To prefetch a
+tagged release explicitly (or in a post-install hook):
 
 ```sh
 bash ~/.tmux/plugins/tmux-history-finder/scripts/install-binary.sh
@@ -62,9 +65,9 @@ run-shell /path/to/tmux-history-finder/tmux_history_finder.tmux
 
 ## Update
 
-When installed with TPM, `prefix + U` or `update_plugins` updates only the Git
-checkout. It does not rebuild local Cargo artifacts or replace an already
-cached backend binary.
+When installed with TPM, `prefix + U` or `update_plugins` updates the Git
+checkout. The wrapper ignores stale local or cached binaries on the next run,
+then rebuilds with Cargo or downloads the binary for an exact release tag.
 
 If you build from source, rebuild the backend after updating:
 
@@ -206,10 +209,18 @@ cursor to the selected screen row and column.
 
 ```sh
 cargo fmt --check
-cargo test
-cargo build
-shellcheck -x --source-path=SCRIPTDIR history_finder.sh tmux_history_finder.tmux scripts/*.sh
+cargo clippy --locked --all-targets -- -D warnings
+env -u TMUX -u TMUX_PANE cargo test --locked
+cargo build --locked
+shellcheck -x --source-path=SCRIPTDIR \
+  history_finder.sh tmux_history_finder.tmux scripts/*.sh tests/*.sh
+bash tests/install-binary.sh
+env -u TMUX -u TMUX_PANE bash tests/shell-quoting.sh
+env -u TMUX -u TMUX_PANE bash tests/tmux-integration.sh
 ```
+
+The tmux integration tests require `tmux`; picker workflows and CI also require
+`fzf`. Every test server uses its own explicit tmux socket.
 
 Use `bash ./history_finder.sh doctor` to verify local dependencies and resolved
 configuration.

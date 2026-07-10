@@ -68,5 +68,5 @@ Items are ordered by user impact and intended commit sequence.
 - [x] Add installer tests for checksum absence, permission failure, and
   concurrent invocation.
 - [x] Install tmux and fzf explicitly in CI and run all integration tests.
-- [ ] Run formatting, clippy, unit/integration tests, shellcheck, and a release
+- [x] Run formatting, clippy, unit/integration tests, shellcheck, and a release
   build before marking this checklist complete.
