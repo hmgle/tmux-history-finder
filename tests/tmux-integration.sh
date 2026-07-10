@@ -31,6 +31,46 @@ wait_for_text() {
     return 1
 }
 
+assert_eq() {
+    local actual="$1"
+    local expected="$2"
+    local description="$3"
+    if [ "$actual" != "$expected" ]; then
+        echo "tmux integration: $description: expected '$expected', got '$actual'" >&2
+        return 1
+    fi
+}
+
+assert_gt() {
+    local actual="$1"
+    local expected="$2"
+    local description="$3"
+    if [ "$actual" -le "$expected" ]; then
+        echo "tmux integration: $description: expected $actual > $expected" >&2
+        return 1
+    fi
+}
+
+assert_le() {
+    local actual="$1"
+    local expected="$2"
+    local description="$3"
+    if [ "$actual" -gt "$expected" ]; then
+        echo "tmux integration: $description: expected $actual <= $expected" >&2
+        return 1
+    fi
+}
+
+assert_num_eq() {
+    local actual="$1"
+    local expected="$2"
+    local description="$3"
+    if [ "$actual" -ne "$expected" ]; then
+        echo "tmux integration: $description: expected $expected, got $actual" >&2
+        return 1
+    fi
+}
+
 pane="$(tmux -L "$SOCKET" -f /dev/null new-session -d -x 50 -y 8 -s review \
     -P -F '#{pane_id}' \
     "bash -lc 'for i in \$(seq 1 40); do if [ \"\$i\" = 5 ]; then echo DUPLICATE; else echo hist-\$i; fi; done; echo visible-a; echo DUPLICATE; echo visible-z; sleep 60'")"
@@ -40,23 +80,26 @@ history_size="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{history_size}
 visible_capture="$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" capture --scope pane --no-history -t "$pane")"
 record="$(printf '%s\n' "$visible_capture" | awk -F '\t' '$6 == "DUPLICATE" { print; exit }')"
 line_no="$(printf '%s\n' "$record" | awk -F '\t' '{print $5}')"
-[ "$line_no" -gt "$history_size" ]
+assert_gt "$line_no" "$history_size" "visible line is outside scrollback"
 THF_TMUX_ARGS="-L $SOCKET" "$BIN" action --action jump --record "$record"
-[ "$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{copy_cursor_word}')" = "DUPLICATE" ]
-[ "$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{scroll_position}')" -le 1 ]
+cursor_word="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{copy_cursor_word}')"
+assert_eq "$cursor_word" DUPLICATE "jump cursor word"
+scroll_position="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{scroll_position}')"
+assert_le "$scroll_position" 1 "jump scroll position"
 tmux -L "$SOCKET" send-keys -t "$pane" -X cancel
 
 limited_capture="$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" capture --scope pane \
     --history-lines 5 -t "$pane")"
 first_line="$(printf '%s\n' "$limited_capture" | awk -F '\t' 'NR == 1 {print $5}')"
 expected_first=$((history_size - 5 + 1))
-[ "$first_line" -eq "$expected_first" ]
+assert_num_eq "$first_line" "$expected_first" "limited capture first line"
 
 wrapped_pane="$(tmux -L "$SOCKET" new-session -d -x 10 -y 8 -s wrapped -P -F '#{pane_id}' \
     "bash -lc 'printf \"wrapped-target-long\\n\"; sleep 60'")"
 wait_for_text "$wrapped_pane" wrapped-target-long
-[ "$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" search --scope pane -t "$wrapped_pane" \
-    --print wrapped-target-long)" = "wrapped-target-long" ]
+wrapped_result="$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" search --scope pane -t "$wrapped_pane" \
+    --print wrapped-target-long)"
+assert_eq "$wrapped_result" wrapped-target-long "wrapped-line search result"
 
 mkdir -p "$TMP/fake-bin"
 cat > "$TMP/fake-bin/tmux" <<'EOF'
@@ -78,6 +121,9 @@ if failure="$(PATH="$TMP/fake-bin:$PATH" "$BIN" search --print needle 2>&1)"; th
     echo "tmux integration: disappearing pane unexpectedly succeeded" >&2
     exit 1
 fi
-printf '%s\n' "$failure" | grep -Fq 'failed to capture pane %9'
+if ! printf '%s\n' "$failure" | grep -Fq 'failed to capture pane %9'; then
+    echo "tmux integration: disappearing pane error was: $failure" >&2
+    exit 1
+fi
 
 echo "tmux integration tests passed"
