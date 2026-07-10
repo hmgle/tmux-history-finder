@@ -10,6 +10,100 @@ pub fn have(program: &str) -> bool {
     which::which(program).is_ok()
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TmuxClient {
+    args: Vec<OsString>,
+}
+
+impl TmuxClient {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self::with_args(tmux_args_from_env()?))
+    }
+
+    pub fn with_args<I, S>(args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        Self {
+            args: args.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new("tmux");
+        command.args(&self.args);
+        command
+    }
+
+    pub fn output<I, S>(&self, args: I) -> Result<Output>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let args: Vec<OsString> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect();
+        self.command()
+            .args(&args)
+            .output()
+            .with_context(|| format!("failed to execute tmux {}", display_args(&args)))
+    }
+
+    pub fn stdout<I, S>(&self, args: I) -> Result<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = self.output(args)?;
+        if !output.status.success() {
+            anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    pub fn try_stdout<I, S>(&self, args: I) -> Option<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = self.output(args).ok()?;
+        output.status.success().then(|| {
+            String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_string()
+        })
+    }
+
+    pub fn run<I, S>(&self, args: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = self.output(args)?;
+        if !output.status.success() {
+            anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Ok(())
+    }
+
+    pub fn run_ignore<I, S>(&self, args: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let _ = self.output(args);
+    }
+}
+
+fn display_args(args: &[OsString]) -> String {
+    args.iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn tmux_args_from_env() -> Result<Vec<OsString>> {
     let Some(raw) = std::env::var_os("THF_TMUX_ARGS") else {
         return Ok(Vec::new());
@@ -23,34 +117,12 @@ fn tmux_args_from_env() -> Result<Vec<OsString>> {
         .map(|parts| parts.into_iter().map(OsString::from).collect())
 }
 
-pub fn command() -> Result<Command> {
-    let mut cmd = Command::new("tmux");
-    cmd.args(tmux_args_from_env()?);
-    Ok(cmd)
-}
-
-pub fn output<I, S>(args: I) -> Result<Output>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = command()?
-        .args(args)
-        .output()
-        .context("failed to execute tmux")?;
-    Ok(output)
-}
-
 pub fn stdout<I, S>(args: I) -> Result<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = output(args)?;
-    if !output.status.success() {
-        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    TmuxClient::from_env()?.stdout(args)
 }
 
 pub fn try_stdout<I, S>(args: I) -> Option<String>
@@ -58,12 +130,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = output(args).ok()?;
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout)
-            .trim_end()
-            .to_string()
-    })
+    TmuxClient::from_env().ok()?.try_stdout(args)
 }
 
 pub fn run<I, S>(args: I) -> Result<()>
@@ -71,11 +138,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = output(args)?;
-    if !output.status.success() {
-        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
-    }
-    Ok(())
+    TmuxClient::from_env()?.run(args)
 }
 
 pub fn run_ignore<I, S>(args: I)
@@ -83,7 +146,9 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let _ = output(args);
+    if let Ok(client) = TmuxClient::from_env() {
+        client.run_ignore(args);
+    }
 }
 
 pub fn display_message(message: &str) {

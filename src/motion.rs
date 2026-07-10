@@ -769,8 +769,20 @@ fn move_cursor(
     target_client: Option<&str>,
     tab_mode: TabMode,
 ) -> Result<()> {
+    let client = tmux::TmuxClient::from_env()?;
+    move_cursor_with_client(&client, pane, line_no, true_col, target_client, tab_mode)
+}
+
+fn move_cursor_with_client(
+    client: &tmux::TmuxClient,
+    pane: &Pane,
+    line_no: usize,
+    true_col: usize,
+    target_client: Option<&str>,
+    tab_mode: TabMode,
+) -> Result<()> {
     if let Some(target_client) = target_client {
-        tmux::run([
+        client.run([
             "switch-client",
             "-c",
             target_client,
@@ -778,14 +790,14 @@ fn move_cursor(
             pane.window_id.as_str(),
         ])?;
     } else {
-        tmux::run(["select-window", "-t", pane.window_id.as_str()])?;
+        client.run(["select-window", "-t", pane.window_id.as_str()])?;
     }
-    tmux::run(["select-pane", "-t", pane.pane_id.as_str()])?;
+    client.run(["select-pane", "-t", pane.pane_id.as_str()])?;
     if !pane.copy_mode {
-        tmux::run(["copy-mode", "-t", pane.pane_id.as_str()])?;
+        client.run(["copy-mode", "-t", pane.pane_id.as_str()])?;
     }
-    send_copy_command(pane, &["top-line"])?;
-    send_copy_command(pane, &["start-of-line"])?;
+    send_copy_command(client, pane, &["top-line"])?;
+    send_copy_command(client, pane, &["start-of-line"])?;
 
     let mut rows_remaining = line_no;
     if tab_mode == TabMode::PositionAware {
@@ -796,26 +808,26 @@ fn move_cursor(
             .unwrap_or_default();
         if first_non_empty > 0 && first_non_empty <= line_no {
             let first = first_non_empty.to_string();
-            send_copy_command(pane, &["-N", first.as_str(), "cursor-down"])?;
-            send_copy_command(pane, &["start-of-line"])?;
+            send_copy_command(client, pane, &["-N", first.as_str(), "cursor-down"])?;
+            send_copy_command(client, pane, &["start-of-line"])?;
             rows_remaining -= first_non_empty;
         }
     }
     if rows_remaining > 0 {
         let rows = rows_remaining.to_string();
-        send_copy_command(pane, &["-N", rows.as_str(), "cursor-down"])?;
+        send_copy_command(client, pane, &["-N", rows.as_str(), "cursor-down"])?;
     }
     if true_col > 0 {
         let col = true_col.to_string();
-        send_copy_command(pane, &["-N", col.as_str(), "cursor-right"])?;
+        send_copy_command(client, pane, &["-N", col.as_str(), "cursor-right"])?;
     }
     Ok(())
 }
 
-fn send_copy_command(pane: &Pane, args: &[&str]) -> Result<()> {
+fn send_copy_command(client: &tmux::TmuxClient, pane: &Pane, args: &[&str]) -> Result<()> {
     let mut command = vec!["send-keys", "-X", "-t", pane.pane_id.as_str()];
     command.extend_from_slice(args);
-    tmux::run(command)
+    client.run(command)
 }
 
 fn find_matches(
@@ -1320,25 +1332,19 @@ fn set_termios(fd: i32, termios: &libc::termios) -> Result<()> {
 mod tests {
     use super::{
         assign_hints_by_distance, expand_tabs, find_matches, generate_hints, hint_positions,
-        move_cursor, popup_command, read_key, smartsign_patterns, string_width,
+        move_cursor_with_client, popup_command, read_key, smartsign_patterns, string_width,
         tmux_tab_mode_from_version, true_position, visual_slice, HintTarget, Match, MotionArgs,
         MotionKind, MotionSnapshot, Pane, TabMode,
     };
     use crate::{tmux, types::CaseMode};
     use std::{
-        env,
-        ffi::OsString,
         path::Path,
         process::Command,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Mutex,
-        },
+        sync::atomic::{AtomicUsize, Ordering},
         thread,
         time::Duration,
     };
 
-    static TMUX_ENV_LOCK: Mutex<()> = Mutex::new(());
     static NEXT_SOCKET_ID: AtomicUsize = AtomicUsize::new(0);
 
     fn pane(lines: &[&str]) -> Pane {
@@ -1358,28 +1364,6 @@ mod tests {
         }
     }
 
-    struct TmuxArgsGuard {
-        previous: Option<OsString>,
-    }
-
-    impl TmuxArgsGuard {
-        fn set(socket: &str) -> Self {
-            let previous = env::var_os("THF_TMUX_ARGS");
-            env::set_var("THF_TMUX_ARGS", format!("-L {socket}"));
-            Self { previous }
-        }
-    }
-
-    impl Drop for TmuxArgsGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = self.previous.take() {
-                env::set_var("THF_TMUX_ARGS", previous);
-            } else {
-                env::remove_var("THF_TMUX_ARGS");
-            }
-        }
-    }
-
     struct TestTmux {
         socket: String,
         pane_id: String,
@@ -1388,10 +1372,8 @@ mod tests {
     }
 
     impl TestTmux {
-        fn start(command: &str, width: usize, height: usize) -> Option<Self> {
-            if !tmux::have("tmux") {
-                return None;
-            }
+        fn start(command: &str, width: usize, height: usize) -> Self {
+            assert!(tmux::have("tmux"), "tmux is required for integration tests");
 
             let socket = format!(
                 "thf-motion-test-{}-{}",
@@ -1412,22 +1394,22 @@ mod tests {
                 .arg("#{pane_id}")
                 .arg(command)
                 .output()
-                .ok()?;
-            if !output.status.success() {
-                return None;
-            }
+                .expect("failed to start test tmux server");
+            assert!(
+                output.status.success(),
+                "failed to start test tmux server: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
 
             let pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if pane_id.is_empty() {
-                return None;
-            }
+            assert!(!pane_id.is_empty(), "test tmux returned no pane id");
 
-            Some(Self {
+            Self {
                 socket,
                 pane_id,
                 width,
                 height,
-            })
+            }
         }
 
         fn direct_stdout(socket: &str, args: &[&str]) -> Option<String> {
@@ -1447,6 +1429,10 @@ mod tests {
         fn stdout(&self, args: &[&str]) -> String {
             Self::direct_stdout(&self.socket, args)
                 .unwrap_or_else(|| panic!("tmux command failed: {args:?}"))
+        }
+
+        fn client(&self) -> tmux::TmuxClient {
+            tmux::TmuxClient::with_args(["-L", self.socket.as_str()])
         }
 
         fn split_window(&self, command: &str) -> String {
@@ -1857,34 +1843,26 @@ mod tests {
 
     #[test]
     fn move_cursor_positions_same_pane() {
-        let _lock = TMUX_ENV_LOCK.lock().unwrap();
-        let Some(server) =
-            TestTmux::start("printf 'line0\\nline1\\nline2_target\\n'; sleep 60", 30, 10)
-        else {
-            return;
-        };
-        let _env = TmuxArgsGuard::set(&server.socket);
+        let server = TestTmux::start("printf 'line0\\nline1\\nline2_target\\n'; sleep 60", 30, 10);
         let lines = server.wait_for_lines(&server.pane_id, "line2_target");
         let pane = server.pane(&server.pane_id, lines);
 
-        move_cursor(&pane, 2, 7, None, TabMode::PositionAware).expect("same-pane cursor move");
+        move_cursor_with_client(&server.client(), &pane, 2, 7, None, TabMode::PositionAware)
+            .expect("same-pane cursor move");
 
         assert_eq!(server.copy_cursor(&server.pane_id), (7, 2));
     }
 
     #[test]
     fn move_cursor_selects_cross_pane_target() {
-        let _lock = TMUX_ENV_LOCK.lock().unwrap();
-        let Some(server) = TestTmux::start("printf 'left\\n'; sleep 60", 40, 12) else {
-            return;
-        };
+        let server = TestTmux::start("printf 'left\\n'; sleep 60", 40, 12);
         let pane2 = server.split_window("printf 'line0\\nline1_target\\n'; sleep 60");
         server.stdout(&["select-pane", "-t", server.pane_id.as_str()]);
-        let _env = TmuxArgsGuard::set(&server.socket);
         let lines = server.wait_for_lines(&pane2, "line1_target");
         let pane = server.pane(&pane2, lines);
 
-        move_cursor(&pane, 1, 6, None, TabMode::PositionAware).expect("cross-pane cursor move");
+        move_cursor_with_client(&server.client(), &pane, 1, 6, None, TabMode::PositionAware)
+            .expect("cross-pane cursor move");
 
         assert_eq!(server.active_pane(), pane2);
         assert_eq!(server.copy_cursor(&pane.pane_id), (6, 1));
@@ -1892,12 +1870,7 @@ mod tests {
 
     #[test]
     fn move_cursor_handles_leading_empty_rows() {
-        let _lock = TMUX_ENV_LOCK.lock().unwrap();
-        let Some(server) = TestTmux::start("printf '\\n\\nleading_target\\n'; sleep 60", 40, 10)
-        else {
-            return;
-        };
-        let _env = TmuxArgsGuard::set(&server.socket);
+        let server = TestTmux::start("printf '\\n\\nleading_target\\n'; sleep 60", 40, 10);
         let lines = server.wait_for_lines(&server.pane_id, "leading_target");
         let target_line = lines
             .iter()
@@ -1905,8 +1878,15 @@ mod tests {
             .expect("target line");
         let pane = server.pane(&server.pane_id, lines);
 
-        move_cursor(&pane, target_line, 0, None, TabMode::PositionAware)
-            .expect("leading-empty cursor move");
+        move_cursor_with_client(
+            &server.client(),
+            &pane,
+            target_line,
+            0,
+            None,
+            TabMode::PositionAware,
+        )
+        .expect("leading-empty cursor move");
 
         assert_eq!(server.copy_cursor(&server.pane_id), (0, target_line));
     }
