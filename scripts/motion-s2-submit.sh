@@ -6,6 +6,7 @@ set -o pipefail
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 client_pid="${1:-}"
 target_window="${2:-}"
+target_client="${3:-}"
 
 if [ -z "$client_pid" ] || [ -z "$target_window" ]; then
     exit 0
@@ -23,4 +24,4 @@ if [ -z "$first" ] || [ -z "$second" ]; then
 fi
 
 tmux set-option -gq "$query_option" "$first$second"
-"$CURRENT_DIR/scripts/motion-run.sh" s2 "$client_pid" "$target_window"
+"$CURRENT_DIR/scripts/motion-run.sh" s2 "$client_pid" "$target_window" "$target_client"

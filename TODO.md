@@ -5,9 +5,9 @@ Items are ordered by user impact and intended commit sequence.
 
 ## 1. Critical correctness
 
-- [ ] Bump the development version so unreleased source never downloads the
+- [x] Bump the development version so unreleased source never downloads the
   incompatible `v0.4.1` backend.
-- [ ] Refuse automatic release downloads from an untagged Git checkout and
+- [x] Refuse automatic release downloads from an untagged Git checkout and
   verify an existing cached backend version before using it.
 - [x] Make motion hint generation terminate for zero or one distinct hint key.
 - [x] Replace the quadratic hint expansion algorithm with bounded linear work.
@@ -43,12 +43,12 @@ Items are ordered by user impact and intended commit sequence.
 
 ## 4. Installer, shell, and terminal safety
 
-- [ ] Make binary installation fail closed on command, checksum, or permission
+- [x] Make binary installation fail closed on command, checksum, or permission
   errors.
-- [ ] Serialize concurrent first-run installations and atomically replace the
+- [x] Serialize concurrent first-run installations and atomically replace the
   cached binary.
-- [ ] Validate archive contents before extraction.
-- [ ] Quote all deferred `tmux run-shell` commands for paths containing spaces
+- [x] Validate archive contents before extraction.
+- [x] Quote all deferred `tmux run-shell` commands for paths containing spaces
   or quotes.
 - [x] Sanitize fzf display fields and remove unnecessary ANSI interpretation.
 - [x] Validate motion hints, border cells, and SGR configuration.
@@ -65,8 +65,8 @@ Items are ordered by user impact and intended commit sequence.
 - [ ] Add isolated tmux integration tests for visible-only duplicate jumps,
   limited history, wrapped lines, disappearing panes, and cross-pane motion.
 - [ ] Make tmux integration prerequisites explicit instead of silently passing.
-- [ ] Add installer tests for checksum absence, permission failure, and
+- [x] Add installer tests for checksum absence, permission failure, and
   concurrent invocation.
-- [ ] Install tmux and fzf explicitly in CI and run all integration tests.
+- [x] Install tmux and fzf explicitly in CI and run all integration tests.
 - [ ] Run formatting, clippy, unit/integration tests, shellcheck, and a release
   build before marking this checklist complete.

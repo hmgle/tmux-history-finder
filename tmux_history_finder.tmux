@@ -2,6 +2,13 @@
 # tmux-history-finder plugin entry point.
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/utils.sh
+source "$CURRENT_DIR/scripts/utils.sh"
+
+search_command="$(thf_shell_quote "$CURRENT_DIR/history_finder.sh") search"
+prompt_search_command="$search_command --query-option @tmux_history_finder_last_query_#{client_pid} --require-query"
+motion_command="$(thf_shell_quote "$CURRENT_DIR/scripts/motion-s.sh") #{client_pid} #{window_id} #{q:client_name}"
+motion2_command="$(thf_shell_quote "$CURRENT_DIR/scripts/motion-s2.sh") #{client_pid} #{window_id} #{q:client_name}"
 
 launch_key=$(tmux show-option -gqv "@tmux_history_finder_launch_key" 2>/dev/null)
 launch_key="${launch_key:-g}"
@@ -16,19 +23,20 @@ prompt_query="${prompt_query:-${THF_PROMPT_QUERY:-0}}"
 case "$prompt_query" in
     1|true|yes|on)
         tmux bind-key "$launch_key" command-prompt -F -p "history search:" -T search \
-            "set-option -gq @tmux_history_finder_last_query_#{client_pid} '%%%'; run-shell -b \"$CURRENT_DIR/history_finder.sh search --query-option @tmux_history_finder_last_query_#{client_pid} --require-query\""
+            "set-option -gq @tmux_history_finder_last_query_#{client_pid} '%%%'" \
+            \; run-shell -b "$prompt_search_command"
         ;;
     *)
-        tmux bind-key "$launch_key" run-shell -b "$CURRENT_DIR/history_finder.sh search"
+        tmux bind-key "$launch_key" run-shell -b "$search_command"
         ;;
 esac
 
 if [ -n "$motion_key" ]; then
-    tmux bind-key "$motion_key" run-shell "$CURRENT_DIR/scripts/motion-s.sh"
+    tmux bind-key "$motion_key" run-shell "$motion_command"
 fi
 
 if [ -n "$motion2_key" ]; then
-    tmux bind-key "$motion2_key" run-shell "$CURRENT_DIR/scripts/motion-s2.sh"
+    tmux bind-key "$motion2_key" run-shell "$motion2_command"
 fi
 
 case "$motion_copy_mode_no_prefix" in
@@ -40,10 +48,10 @@ case "$motion_copy_mode_no_prefix" in
             copy_mode_table="copy-mode"
         fi
         if [ -n "$motion_key" ]; then
-            tmux bind-key -T "$copy_mode_table" "$motion_key" run-shell "$CURRENT_DIR/scripts/motion-s.sh"
+            tmux bind-key -T "$copy_mode_table" "$motion_key" run-shell "$motion_command"
         fi
         if [ -n "$motion2_key" ]; then
-            tmux bind-key -T "$copy_mode_table" "$motion2_key" run-shell "$CURRENT_DIR/scripts/motion-s2.sh"
+            tmux bind-key -T "$copy_mode_table" "$motion2_key" run-shell "$motion2_command"
         fi
         ;;
 esac
