@@ -111,21 +111,21 @@ bash ./history_finder.sh doctor                # dependency/config diagnostics
 
 Inside fzf:
 
-| Key      | Action                                      |
-| -------- | ------------------------------------------- |
-| `Enter`  | Run the configured default action           |
-| `TAB`    | Multi-select results                        |
-| `Ctrl-y` | Copy selected result text                   |
-| `Ctrl-s` | Send selected text to the current pane      |
-| `Ctrl-p` | Print selected text to stdout               |
-| `ESC`    | Cancel                                      |
+| Key      | Action                                 |
+| -------- | -------------------------------------- |
+| `Enter`  | Run the configured default action      |
+| `TAB`    | Multi-select results                   |
+| `Ctrl-y` | Copy selected result text              |
+| `Ctrl-s` | Send selected text to the current pane |
+| `Ctrl-p` | Print selected text to stdout          |
+| `ESC`    | Cancel                                 |
 
 Motion mode:
 
-| Key | Action |
-| --- | --- |
-| `Prefix+s` | Prompt for one character, draw hints over visible panes, then jump to the selected hint |
-| configured `motion2_key` | Prompt for two characters and jump to the selected matching pair |
+| Key                      | Action                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------- |
+| `Prefix+s`               | Prompt for one character, draw hints over visible panes, then jump to the selected hint |
+| configured `motion2_key` | Prompt for two characters and jump to the selected matching pair                        |
 
 The two-character binding is disabled by default. Set
 `@tmux_history_finder_motion2_key` to enable it.
@@ -154,28 +154,28 @@ THF_TMUX_ARGS='-L work' bash ./history_finder.sh --scope session error
 
 Supported values:
 
-| Option / env var | Default | Values |
-| --- | --- | --- |
-| `launch_key` / `THF_LAUNCH_KEY` | `g` | tmux prefix binding |
-| `scope` / `THF_SCOPE` | `all` | `all`, `session`, `pane` |
-| `include_history` / `THF_INCLUDE_HISTORY` | `1` | `1` or `0` |
-| `history_lines` / `THF_HISTORY_LINES` | `0` | `0` for all history, or a positive line count |
-| `case` / `THF_CASE` | `smart` | `smart`, `sensitive`, `insensitive` |
-| `join_wraps` / `THF_JOIN_WRAPS` | `1` | `1` or `0` |
-| `skip_blank` / `THF_SKIP_BLANK` | `1` | `1` or `0` |
-| `preview` / `THF_PREVIEW` | `1` | `1` or `0` |
-| `prompt_query` / `THF_PROMPT_QUERY` | `0` | `1` asks for a query before capturing panes |
-| `default_action` / `THF_DEFAULT_ACTION` | `jump` | `jump`, `copy`, `send`, `print` |
-| `fzf_options` / `THF_FZF_OPTIONS` | empty | extra fzf arguments |
-| `motion_key` / `THF_MOTION_KEY` | `s` | tmux prefix binding for 1-character visible-pane motion |
-| `motion2_key` / `THF_MOTION2_KEY` | empty | tmux prefix binding for 2-character visible-pane motion |
-| `motion_hints` / `THF_MOTION_HINTS` | `asdghklqwertyuiopzxcvbnmfj;` | characters used for motion hints |
-| `motion_case` / `THF_MOTION_CASE` | `insensitive` | `smart`, `sensitive`, `insensitive` |
-| `motion_smartsign` / `THF_MOTION_SMARTSIGN` | `0` | `1` also matches shifted symbols such as `1` -> `!` |
-| `motion_copy_mode_no_prefix` / `THF_MOTION_COPY_MODE_NO_PREFIX` | `0` | bind motion keys directly in copy-mode tables |
-| `motion_hint1_fg` / `THF_MOTION_HINT1_FG` | `1;31` | SGR color for the first hint character |
-| `motion_hint2_fg` / `THF_MOTION_HINT2_FG` | `1;32` | SGR color for the second hint character |
-| `motion_dim` / `THF_MOTION_DIM` | `2` | SGR color for dimmed pane borders |
+| Option / env var                                                | Default                       | Values                                                  |
+| --------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------- |
+| `launch_key` / `THF_LAUNCH_KEY`                                 | `g`                           | tmux prefix binding                                     |
+| `scope` / `THF_SCOPE`                                           | `all`                         | `all`, `session`, `pane`                                |
+| `include_history` / `THF_INCLUDE_HISTORY`                       | `1`                           | `1` or `0`                                              |
+| `history_lines` / `THF_HISTORY_LINES`                           | `0`                           | `0` for all history, or a positive line count           |
+| `case` / `THF_CASE`                                             | `smart`                       | `smart`, `sensitive`, `insensitive`                     |
+| `join_wraps` / `THF_JOIN_WRAPS`                                 | `1`                           | `1` or `0`                                              |
+| `skip_blank` / `THF_SKIP_BLANK`                                 | `1`                           | `1` or `0`                                              |
+| `preview` / `THF_PREVIEW`                                       | `1`                           | `1` or `0`                                              |
+| `prompt_query` / `THF_PROMPT_QUERY`                             | `0`                           | `1` asks for a query before capturing panes             |
+| `default_action` / `THF_DEFAULT_ACTION`                         | `jump`                        | `jump`, `copy`, `send`, `print`                         |
+| `fzf_options` / `THF_FZF_OPTIONS`                               | empty                         | extra fzf arguments                                     |
+| `motion_key` / `THF_MOTION_KEY`                                 | `s`                           | tmux prefix binding for 1-character visible-pane motion |
+| `motion2_key` / `THF_MOTION2_KEY`                               | empty                         | tmux prefix binding for 2-character visible-pane motion |
+| `motion_hints` / `THF_MOTION_HINTS`                             | `asdghklqwertyuiopzxcvbnmfj;` | characters used for motion hints                        |
+| `motion_case` / `THF_MOTION_CASE`                               | `insensitive`                 | `smart`, `sensitive`, `insensitive`                     |
+| `motion_smartsign` / `THF_MOTION_SMARTSIGN`                     | `0`                           | `1` also matches shifted symbols such as `1` -> `!`     |
+| `motion_copy_mode_no_prefix` / `THF_MOTION_COPY_MODE_NO_PREFIX` | `0`                           | bind motion keys directly in copy-mode tables           |
+| `motion_hint1_fg` / `THF_MOTION_HINT1_FG`                       | `1;31`                        | SGR color for the first hint character                  |
+| `motion_hint2_fg` / `THF_MOTION_HINT2_FG`                       | `1;32`                        | SGR color for the second hint character                 |
+| `motion_dim` / `THF_MOTION_DIM`                                 | `2`                           | SGR color for dimmed pane borders                       |
 
 CLI flags override configuration for that run.
 
@@ -224,6 +224,11 @@ The tmux integration tests require `tmux`; picker workflows and CI also require
 
 Use `bash ./history_finder.sh doctor` to verify local dependencies and resolved
 configuration.
+
+## Inspired by
+
+- [tmux-fzf](https://github.com/sainnhe/tmux-fzf)
+- [tmux-easymotion](https://github.com/ddzero2c/tmux-easymotion)
 
 ## License
 
