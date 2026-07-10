@@ -1,9 +1,11 @@
-use anyhow::Result;
+use std::io::Write;
+
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::{
     config::Config,
-    index::{PaneSnapshot, Record, SearchIndex},
+    index::{PaneSnapshot, Record, SearchIndex, INDEX_VERSION},
     tmux,
     types::Scope,
 };
@@ -23,52 +25,45 @@ pub fn build_index(config: &Config, target_pane: Option<&str>) -> Result<SearchI
     let panes = list_panes(config.scope, target_pane)?;
     let snapshots: Vec<PaneSnapshot> = panes
         .par_iter()
-        .filter_map(|pane| capture_pane(pane, config).ok())
-        .collect();
+        .map(|pane| {
+            capture_pane(pane, config)
+                .with_context(|| format!("failed to capture pane {}", pane.pane_id))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let mut records = Vec::new();
     for (pane_index, pane) in snapshots.iter().enumerate() {
-        let mut logical_line_no = 0usize;
         for (line_index, line) in pane.lines.iter().enumerate() {
             if config.skip_blank && line.trim().is_empty() {
                 continue;
             }
 
-            logical_line_no += 1;
-            let text = line.trim_end_matches('\r').to_string();
-            let before = line_index
-                .checked_sub(1)
-                .and_then(|idx| pane.lines.get(idx))
-                .cloned();
-            let after = pane.lines.get(line_index + 1).cloned();
             records.push(Record {
-                id: records.len(),
                 pane_index,
-                raw_line_no: line_index + 1,
-                logical_line_no,
-                location: pane.location(),
-                text,
-                before,
-                after,
+                line_index,
             });
         }
     }
 
     Ok(SearchIndex {
-        version: 1,
+        version: INDEX_VERSION,
         panes: snapshots,
         records,
     })
 }
 
-pub fn legacy_tsv(config: &Config, target_pane: Option<&str>) -> Result<String> {
+pub fn write_legacy_tsv(
+    config: &Config,
+    target_pane: Option<&str>,
+    writer: &mut impl Write,
+) -> Result<()> {
     let panes = list_panes(config.scope, target_pane)?;
-    let chunks: Vec<String> = panes
-        .par_iter()
-        .filter_map(|pane| capture_pane_legacy_tsv(pane, config).ok())
-        .collect();
-
-    Ok(chunks.concat())
+    for pane in &panes {
+        let output = capture_pane_output(pane, config)
+            .with_context(|| format!("failed to capture pane {}", pane.pane_id))?;
+        write_legacy_pane(writer, pane, config, &output)?;
+    }
+    Ok(())
 }
 
 fn list_panes(scope: Scope, target_pane: Option<&str>) -> Result<Vec<PaneInfo>> {
@@ -118,36 +113,32 @@ fn parse_panes(output: &str) -> Vec<PaneInfo> {
         .collect()
 }
 
-fn capture_pane_legacy_tsv(pane: &PaneInfo, config: &Config) -> Result<String> {
-    let output = capture_pane_output(pane, config)?;
-    Ok(format_legacy_tsv(pane, config, &output))
-}
-
-fn format_legacy_tsv(pane: &PaneInfo, config: &Config, output: &str) -> String {
+fn write_legacy_pane(
+    writer: &mut impl Write,
+    pane: &PaneInfo,
+    config: &Config,
+    output: &str,
+) -> Result<()> {
     let location = pane_location(pane);
     let line_offset = history_start_line(pane, config);
-    let mut tsv = String::new();
 
     for (line_index, line) in output.lines().enumerate() {
         if config.skip_blank && line.trim().is_empty() {
             continue;
         }
 
-        tsv.push_str(&pane.pane_id);
-        tsv.push('\t');
-        tsv.push_str(&location);
-        tsv.push('\t');
-        tsv.push_str(&pane.command);
-        tsv.push('\t');
-        tsv.push_str(&pane.window_name);
-        tsv.push('\t');
-        tsv.push_str(&(line_offset + line_index + 1).to_string());
-        tsv.push('\t');
-        tsv.push_str(line.trim_end_matches('\r'));
-        tsv.push('\n');
+        writeln!(
+            writer,
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            pane.pane_id,
+            location,
+            pane.command,
+            pane.window_name,
+            line_offset + line_index + 1,
+            line.trim_end_matches('\r')
+        )?;
     }
-
-    tsv
+    Ok(())
 }
 
 fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
@@ -155,9 +146,7 @@ fn capture_pane(pane: &PaneInfo, config: &Config) -> Result<PaneSnapshot> {
     let lines = output.lines().map(ToOwned::to_owned).collect();
 
     Ok(PaneSnapshot {
-        session: pane.session.clone(),
-        window_index: pane.window_index.clone(),
-        pane_index: pane.pane_index.clone(),
+        location: pane_location(pane),
         pane_id: pane.pane_id.clone(),
         command: pane.command.clone(),
         window_name: pane.window_name.clone(),
@@ -196,6 +185,9 @@ fn history_start(config: &Config) -> String {
 }
 
 fn history_start_line(pane: &PaneInfo, config: &Config) -> usize {
+    if !config.include_history {
+        return pane.history_size;
+    }
     config
         .history_lines
         .map(|lines| pane.history_size.saturating_sub(lines))
@@ -204,7 +196,7 @@ fn history_start_line(pane: &PaneInfo, config: &Config) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_legacy_tsv, history_start, history_start_line, PaneInfo};
+    use super::{history_start, history_start_line, write_legacy_pane, PaneInfo};
     use crate::{
         config::Config,
         types::{ActionKind, CaseMode, Scope, SearchMode},
@@ -213,6 +205,9 @@ mod tests {
     fn config(history_lines: Option<usize>) -> Config {
         Config {
             launch_key: "g".into(),
+            motion_key: "s".into(),
+            motion2_key: String::new(),
+            motion_copy_mode_no_prefix: false,
             scope: Scope::All,
             include_history: true,
             history_lines,
@@ -224,6 +219,14 @@ mod tests {
             default_action: ActionKind::Jump,
             fzf_options: String::new(),
             search_mode: SearchMode::Literal,
+            motion_hints: "asdghklqwertyuiopzxcvbnmfj;".into(),
+            motion_case_mode: CaseMode::Insensitive,
+            motion_smartsign: false,
+            motion_vertical_border: "|".into(),
+            motion_horizontal_border: "-".into(),
+            motion_hint1_fg: "1;31".into(),
+            motion_hint2_fg: "1;32".into(),
+            motion_dim: "2".into(),
         }
     }
 
@@ -265,9 +268,24 @@ mod tests {
     }
 
     #[test]
+    fn visible_only_capture_starts_after_scrollback() {
+        let mut config = config(Some(5000));
+        config.include_history = false;
+        assert_eq!(history_start_line(&pane(10_000), &config), 10_000);
+    }
+
+    #[test]
     fn legacy_tsv_keeps_raw_line_numbers_when_skipping_blanks() {
+        let mut output = Vec::new();
+        write_legacy_pane(
+            &mut output,
+            &pane(1300),
+            &config(Some(100)),
+            "alpha\n\nbeta\n",
+        )
+        .unwrap();
         assert_eq!(
-            format_legacy_tsv(&pane(1300), &config(Some(100)), "alpha\n\nbeta\n"),
+            String::from_utf8(output).unwrap(),
             "%1\ts:1.0\tzsh\tmain\t1201\talpha\n%1\ts:1.0\tzsh\tmain\t1203\tbeta\n"
         );
     }

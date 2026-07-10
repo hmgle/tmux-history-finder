@@ -114,6 +114,17 @@ impl FromStr for CaseMode {
     }
 }
 
+impl fmt::Display for CaseMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Smart => "smart",
+            Self::Sensitive => "sensitive",
+            Self::Insensitive => "insensitive",
+        };
+        f.write_str(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchMode {
     #[default]

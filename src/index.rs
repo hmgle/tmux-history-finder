@@ -1,13 +1,17 @@
-use std::{fs, path::Path};
+use std::{
+    fs::{self, File},
+    io::{BufReader, BufWriter, Write},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub const INDEX_VERSION: u32 = 2;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneSnapshot {
-    pub session: String,
-    pub window_index: String,
-    pub pane_index: String,
+    pub location: String,
     pub pane_id: String,
     pub command: String,
     pub window_name: String,
@@ -17,21 +21,21 @@ pub struct PaneSnapshot {
 }
 
 impl PaneSnapshot {
-    pub fn location(&self) -> String {
-        format!("{}:{}.{}", self.session, self.window_index, self.pane_index)
+    pub fn location(&self) -> &str {
+        &self.location
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
-    pub id: usize,
     pub pane_index: usize,
-    pub raw_line_no: usize,
-    pub logical_line_no: usize,
-    pub location: String,
-    pub text: String,
-    pub before: Option<String>,
-    pub after: Option<String>,
+    pub line_index: usize,
+}
+
+impl Record {
+    pub fn raw_line_no(&self) -> usize {
+        self.line_index + 1
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -42,33 +46,73 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
-    pub fn save(&self, path: &Path) -> Result<()> {
-        let data = serde_json::to_vec(self)?;
-        fs::write(path, data).with_context(|| format!("failed to write {}", path.display()))
-    }
-
     pub fn load(path: &Path) -> Result<Self> {
-        let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-        serde_json::from_slice(&data).with_context(|| format!("failed to parse {}", path.display()))
+        let file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        let index: Self = serde_json::from_reader(BufReader::new(file))
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if index.version != INDEX_VERSION {
+            anyhow::bail!(
+                "unsupported index version {} (expected {INDEX_VERSION})",
+                index.version
+            );
+        }
+        Ok(index)
     }
 
     pub fn record(&self, id: usize) -> Option<&Record> {
-        self.records.get(id).filter(|record| record.id == id)
+        self.records.get(id)
     }
 
     pub fn pane_for(&self, record: &Record) -> Option<&PaneSnapshot> {
         self.panes.get(record.pane_index)
     }
 
+    pub fn text_for(&self, record: &Record) -> Option<&str> {
+        self.pane_for(record)?
+            .lines
+            .get(record.line_index)
+            .map(String::as_str)
+    }
+
+    pub fn save_preview_panes(&self, directory: &Path) -> Result<()> {
+        fs::create_dir_all(directory)
+            .with_context(|| format!("failed to create {}", directory.display()))?;
+        for (pane_index, pane) in self.panes.iter().enumerate() {
+            let path = preview_pane_path(directory, pane_index);
+            let file = File::create(&path)
+                .with_context(|| format!("failed to create {}", path.display()))?;
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer(&mut writer, pane)?;
+            writer
+                .flush()
+                .with_context(|| format!("failed to write {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    pub fn load_preview_pane(directory: &Path, pane_index: usize) -> Result<PaneSnapshot> {
+        let path = preview_pane_path(directory, pane_index);
+        let file =
+            File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+        serde_json::from_reader(BufReader::new(file))
+            .with_context(|| format!("failed to parse {}", path.display()))
+    }
+
     #[allow(dead_code)]
     pub fn legacy_tsv(&self, record: &Record) -> Option<String> {
         let pane = self.pane_for(record)?;
-        let line_no = pane.history_start_line + record.raw_line_no;
+        let line_no = pane.history_start_line + record.raw_line_no();
+        let text = self.text_for(record)?;
         Some(format!(
             "{}\t{}\t{}\t{}\t{}\t{}",
-            pane.pane_id, record.location, pane.command, pane.window_name, line_no, record.text
+            pane.pane_id, pane.location, pane.command, pane.window_name, line_no, text
         ))
     }
+}
+
+fn preview_pane_path(directory: &Path, pane_index: usize) -> PathBuf {
+    directory.join(format!("pane-{pane_index}.json"))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -102,6 +146,7 @@ impl LegacyRecord {
 #[cfg(test)]
 mod tests {
     use super::{LegacyRecord, PaneSnapshot, Record, SearchIndex};
+    use tempfile::tempdir;
 
     #[test]
     fn parses_legacy_record_with_tabs_in_text() {
@@ -114,21 +159,23 @@ mod tests {
     #[test]
     fn record_lookup_uses_the_record_id_as_index() {
         let index = SearchIndex {
-            records: vec![Record {
-                id: 0,
-                pane_index: 0,
-                raw_line_no: 1,
-                logical_line_no: 1,
+            panes: vec![PaneSnapshot {
                 location: "s:1.0".into(),
-                text: "alpha".into(),
-                before: None,
-                after: None,
+                pane_id: "%1".into(),
+                command: "zsh".into(),
+                window_name: "main".into(),
+                history_start_line: 0,
+                lines: vec!["alpha".into()],
+            }],
+            records: vec![Record {
+                pane_index: 0,
+                line_index: 0,
             }],
             ..SearchIndex::default()
         };
 
         assert_eq!(
-            index.record(0).map(|record| record.text.as_str()),
+            index.record(0).and_then(|record| index.text_for(record)),
             Some("alpha")
         );
         assert!(index.record(1).is_none());
@@ -138,24 +185,24 @@ mod tests {
     fn legacy_tsv_uses_absolute_history_line_number() {
         let index = SearchIndex {
             panes: vec![PaneSnapshot {
-                session: "s".into(),
-                window_index: "1".into(),
-                pane_index: "0".into(),
+                location: "s:1.0".into(),
                 pane_id: "%1".into(),
                 command: "zsh".into(),
                 window_name: "main".into(),
                 history_start_line: 1200,
-                lines: Vec::new(),
+                lines: (1..=25)
+                    .map(|line| {
+                        if line == 25 {
+                            "alpha".to_string()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect(),
             }],
             records: vec![Record {
-                id: 0,
                 pane_index: 0,
-                raw_line_no: 25,
-                logical_line_no: 25,
-                location: "s:1.0".into(),
-                text: "alpha".into(),
-                before: None,
-                after: None,
+                line_index: 24,
             }],
             ..SearchIndex::default()
         };
@@ -164,5 +211,26 @@ mod tests {
             index.legacy_tsv(&index.records[0]).as_deref(),
             Some("%1\ts:1.0\tzsh\tmain\t1225\talpha")
         );
+    }
+
+    #[test]
+    fn preview_snapshot_loads_one_pane() {
+        let directory = tempdir().unwrap();
+        let index = SearchIndex {
+            panes: vec![PaneSnapshot {
+                location: "s:1.0".into(),
+                pane_id: "%1".into(),
+                command: "zsh".into(),
+                window_name: "main".into(),
+                history_start_line: 0,
+                lines: vec!["alpha".into(), "beta".into()],
+            }],
+            ..SearchIndex::default()
+        };
+
+        index.save_preview_panes(directory.path()).unwrap();
+        let pane = SearchIndex::load_preview_pane(directory.path(), 0).unwrap();
+        assert_eq!(pane.location(), "s:1.0");
+        assert_eq!(pane.lines, vec!["alpha", "beta"]);
     }
 }

@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod fzf;
 mod index;
+mod motion;
 mod preview;
 mod search;
 mod tmux;

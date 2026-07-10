@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Visible-pane motion mode can now jump to matching text in the current tmux
+  window with easymotion-style hints. `Prefix+s` starts one-character motion,
+  and `@tmux_history_finder_motion2_key` can enable two-character motion.
+- Isolated tmux integration coverage now exercises visible-only duplicate
+  jumps, limited history, wrapped lines, disappearing panes, and cross-pane
+  motion navigation.
+
+### Changed
+- Motion overlays now render in a borderless tmux popup instead of a temporary
+  tmux window.
+- Search records now store compact pane and line coordinates instead of cloned
+  text and metadata. Preview snapshots are split per pane and legacy capture is
+  streamed, substantially reducing peak memory on large histories.
+- Motion popup startup reuses its initial visible-pane snapshot, and overlay
+  rendering batches terminal writes instead of repeating capture and flush
+  work.
+- Cached backends are accepted only when their version matches the source and
+  they are newer than Rust inputs. Untagged source checkouts no longer download
+  an unrelated release binary automatically.
+- Motion internals are split into capture, matching, hint, rendering, terminal,
+  and navigation modules.
+
+### Fixed
+- Motion hints can grow beyond two characters, so common matches no longer
+  silently drop distant targets.
+- Motion overlays restore tab cells as expanded screen spaces after hint
+  filtering.
+- Visible-only and limited-history jumps now preserve the absolute scrollback
+  offset, including when the same text also appears earlier in history.
+- Literal case-insensitive search now handles Unicode, while fzf cancellation,
+  invocation errors, and prefilter queries retain their distinct semantics.
+- Invalid configuration, malformed shell options, pane capture failures, jump
+  failures, and tmux-buffer failures now return actionable errors instead of
+  silently falling back or dropping data.
+- Deferred tmux commands now quote paths and values safely, and fzf display
+  fields are sanitized before rendering.
+- Motion raw mode now restores terminal state on Ctrl-C and error paths, drains
+  trailing escape bytes, and avoids drawing or restoring cells across pane and
+  wide-character boundaries.
+
+### Security
+- Prebuilt installation now requires a valid checksum, rejects unsafe archive
+  paths, serializes concurrent installs, and replaces the cached binary
+  atomically only after every download and verification step succeeds.
+
 ## [0.4.1] - 2026-06-22
 
 ### Changed

@@ -1,4 +1,9 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    fs::File,
+    io::{self, BufWriter, Write},
+    path::PathBuf,
+};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -7,7 +12,7 @@ use tempfile::Builder;
 use crate::{
     action, capture,
     config::{Config, ConfigOverrides},
-    fzf, index, preview, search, tmux,
+    fzf, index, motion, preview, search, tmux,
     types::{ActionKind, CaseMode, Scope, SearchMode},
 };
 
@@ -28,6 +33,7 @@ enum Command {
     Capture(CaptureArgs),
     Preview(PreviewArgs),
     Action(ActionArgs),
+    Motion(motion::MotionArgs),
     Doctor,
 }
 
@@ -43,9 +49,9 @@ struct SearchArgs {
     action: Option<ActionKind>,
     #[arg(long = "case", value_enum)]
     case_mode: Option<CaseMode>,
-    #[arg(long = "no-history")]
+    #[arg(long = "no-history", conflicts_with = "history")]
     no_history: bool,
-    #[arg(long = "history")]
+    #[arg(long = "history", conflicts_with = "no_history")]
     history: bool,
     #[arg(long = "history-lines", value_name = "LINES")]
     history_lines: Option<usize>,
@@ -75,9 +81,9 @@ struct CaptureArgs {
     positional_output: Option<PathBuf>,
     #[arg(short = 's', long = "scope", value_enum)]
     scope: Option<Scope>,
-    #[arg(long = "no-history")]
+    #[arg(long = "no-history", conflicts_with = "history")]
     no_history: bool,
-    #[arg(long = "history")]
+    #[arg(long = "history", conflicts_with = "no_history")]
     history: bool,
     #[arg(long = "history-lines", value_name = "LINES")]
     history_lines: Option<usize>,
@@ -97,6 +103,10 @@ struct PreviewArgs {
     index: Option<PathBuf>,
     #[arg(long = "record-id")]
     record_id: Option<usize>,
+    #[arg(long = "pane-index", hide = true)]
+    pane_index: Option<usize>,
+    #[arg(long = "line-index", hide = true)]
+    line_index: Option<usize>,
     #[arg(long = "query")]
     query: Option<String>,
     #[arg(value_name = "LEGACY_RECORD")]
@@ -176,6 +186,7 @@ pub fn run() -> Result<()> {
         Command::Capture(args) => run_capture(args),
         Command::Preview(args) => run_preview(args),
         Command::Action(args) => run_action(args),
+        Command::Motion(args) => run_motion(args),
         Command::Doctor => run_doctor(),
     }
 }
@@ -190,7 +201,7 @@ fn normalize_args() -> Vec<OsString> {
     let first = args[1].to_string_lossy();
     let known = matches!(
         first.as_ref(),
-        "search" | "capture" | "preview" | "action" | "doctor" | "help"
+        "search" | "capture" | "preview" | "action" | "motion" | "doctor" | "help"
     );
     let root_flag = matches!(first.as_ref(), "-h" | "--help" | "-V" | "--version");
     if !known && !root_flag {
@@ -201,7 +212,7 @@ fn normalize_args() -> Vec<OsString> {
 
 fn run_search(args: SearchArgs) -> Result<()> {
     ensure_tmux()?;
-    let config = Config::load(&args.overrides());
+    let config = Config::load(&args.overrides())?;
     let query = args.resolved_query();
     if args.require_query && query.is_none() {
         return Ok(());
@@ -231,18 +242,11 @@ fn run_search(args: SearchArgs) -> Result<()> {
     }
 
     ensure_fzf()?;
-    let index_file = Builder::new()
-        .prefix("thf_index.")
-        .suffix(".json")
-        .tempfile()?;
-    index.save(index_file.path())?;
-    let picked = fzf::run_picker(
-        &index,
-        &record_ids,
-        &config,
-        query.as_deref(),
-        index_file.path(),
-    )?;
+    let preview_dir = Builder::new().prefix("thf_preview.").tempdir()?;
+    if config.preview {
+        index.save_preview_panes(preview_dir.path())?;
+    }
+    let picked = fzf::run_picker(&index, &record_ids, &config, preview_dir.path())?;
     for record_id in picked.record_ids {
         action::execute(&index, record_id, picked.action, &config)?;
     }
@@ -251,19 +255,32 @@ fn run_search(args: SearchArgs) -> Result<()> {
 
 fn run_capture(args: CaptureArgs) -> Result<()> {
     ensure_tmux()?;
-    let config = Config::load(&args.overrides());
-    let output = capture::legacy_tsv(&config, args.target_pane.as_deref())?;
-
+    let config = Config::load(&args.overrides())?;
     if let Some(path) = args.output_path() {
-        std::fs::write(path, output)
+        let file =
+            File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+        let mut writer = BufWriter::new(file);
+        capture::write_legacy_tsv(&config, args.target_pane.as_deref(), &mut writer)?;
+        writer
+            .flush()
             .with_context(|| format!("failed to write {}", path.display()))?;
     } else {
-        print!("{output}");
+        let stdout = io::stdout();
+        let mut writer = stdout.lock();
+        capture::write_legacy_tsv(&config, args.target_pane.as_deref(), &mut writer)?;
+        writer.flush()?;
     }
     Ok(())
 }
 
 fn run_preview(args: PreviewArgs) -> Result<()> {
+    if let (Some(index_path), Some(pane_index), Some(line_index)) =
+        (args.index.as_ref(), args.pane_index, args.line_index)
+    {
+        let pane = index::SearchIndex::load_preview_pane(index_path, pane_index)?;
+        return preview::print_pane_preview(&pane, line_index);
+    }
+
     if let (Some(index_path), Some(record_id)) = (args.index.as_ref(), args.record_id) {
         let index = index::SearchIndex::load(index_path)?;
         return preview::print_index_preview(&index, record_id, args.query.as_deref());
@@ -278,7 +295,7 @@ fn run_preview(args: PreviewArgs) -> Result<()> {
 }
 
 fn run_action(args: ActionArgs) -> Result<()> {
-    let config = Config::load(&ConfigOverrides::default());
+    let config = Config::load(&ConfigOverrides::default())?;
     let action = args.action.unwrap_or(config.default_action);
 
     if let (Some(index_path), Some(record_id)) = (args.index.as_ref(), args.record_id) {
@@ -294,6 +311,12 @@ fn run_action(args: ActionArgs) -> Result<()> {
     anyhow::bail!("action requires --index + --record-id or --record");
 }
 
+fn run_motion(args: motion::MotionArgs) -> Result<()> {
+    ensure_tmux()?;
+    let config = Config::load(&ConfigOverrides::default())?;
+    motion::run(args, &config)
+}
+
 fn run_doctor() -> Result<()> {
     println!("tmux-history-finder {}", env!("CARGO_PKG_VERSION"));
     println!("tmux: {}", describe_program("tmux", &["-V"], true));
@@ -304,7 +327,7 @@ fn run_doctor() -> Result<()> {
     );
     println!("rg: {}", describe_program("rg", &["--version"], false));
     println!("clipboard: {}", clipboard_status());
-    let config = Config::load(&ConfigOverrides::default());
+    let config = Config::load(&ConfigOverrides::default())?;
     println!(
         "config: key={} scope={} action={} preview={} prompt_query={} history={} history_lines={} join_wraps={}",
         config.launch_key,
@@ -318,6 +341,19 @@ fn run_doctor() -> Result<()> {
             .map(|lines| lines.to_string())
             .unwrap_or_else(|| "all".to_string()),
         config.join_wraps
+    );
+    println!(
+        "motion: key={} key2={} hints={} case={} smartsign={} copy_mode_no_prefix={}",
+        config.motion_key,
+        if config.motion2_key.is_empty() {
+            "(disabled)"
+        } else {
+            config.motion2_key.as_str()
+        },
+        config.motion_hints,
+        config.motion_case_mode,
+        config.motion_smartsign,
+        config.motion_copy_mode_no_prefix
     );
     Ok(())
 }

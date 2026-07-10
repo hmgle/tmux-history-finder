@@ -9,6 +9,10 @@ This branch uses a Rust backend (`thf`) for capture, indexing, search, preview,
 and actions. The tmux plugin entry point and legacy shell script paths remain as
 small compatibility wrappers.
 
+It also includes a tmux-easymotion style visible-pane motion mode: jump to any
+matching character currently visible in the active tmux window using short
+on-screen hints.
+
 ## Requirements
 
 - `tmux` 3.2+ recommended.
@@ -30,14 +34,17 @@ The wrapper `history_finder.sh` resolves the `thf` backend in this order:
 
 1. `$THF_BIN`, if set to an executable.
 2. A locally built binary (`target/release/thf` or `target/debug/thf`).
-3. A previously downloaded binary (`bin/thf`).
+3. A current, previously downloaded binary (`bin/thf`).
 4. `cargo run`, when a Rust toolchain is present (source checkouts/development).
 5. Otherwise, a prebuilt release binary is downloaded for your platform via
    `scripts/install-binary.sh` (checksum-verified) into `bin/thf`.
 
-So a plain TPM install needs no toolchain: the first launch fetches the matching
-prebuilt binary and caches it. To prefetch it explicitly (or in a post-install
-hook):
+Local and downloaded binaries are used only when their version matches
+`Cargo.toml` and they are newer than the Rust sources. A plain tagged TPM
+install therefore needs no toolchain: the first launch fetches the matching
+prebuilt binary and caches it. Untagged source checkouts are never paired with a
+release binary automatically; build those with Cargo instead. To prefetch a
+tagged release explicitly (or in a post-install hook):
 
 ```sh
 bash ~/.tmux/plugins/tmux-history-finder/scripts/install-binary.sh
@@ -58,9 +65,9 @@ run-shell /path/to/tmux-history-finder/tmux_history_finder.tmux
 
 ## Update
 
-When installed with TPM, `prefix + U` or `update_plugins` updates only the Git
-checkout. It does not rebuild local Cargo artifacts or replace an already
-cached backend binary.
+When installed with TPM, `prefix + U` or `update_plugins` updates the Git
+checkout. The wrapper ignores stale local or cached binaries on the next run,
+then rebuilds with Cargo or downloads the binary for an exact release tag.
 
 If you build from source, rebuild the backend after updating:
 
@@ -97,19 +104,31 @@ bash ./history_finder.sh --history-lines 5000  # limit scrollback captured per p
 bash ./history_finder.sh --action copy token   # copy selected text
 bash ./history_finder.sh --print panic         # non-interactive print
 bash ./history_finder.sh --regex 'error|panic' # regex search
+bash ./history_finder.sh motion s a            # visible-pane 1-char jump
+bash ./history_finder.sh motion s2 he          # visible-pane 2-char jump
 bash ./history_finder.sh doctor                # dependency/config diagnostics
 ```
 
 Inside fzf:
 
-| Key      | Action                                      |
-| -------- | ------------------------------------------- |
-| `Enter`  | Run the configured default action           |
-| `TAB`    | Multi-select results                        |
-| `Ctrl-y` | Copy selected result text                   |
-| `Ctrl-s` | Send selected text to the current pane      |
-| `Ctrl-p` | Print selected text to stdout               |
-| `ESC`    | Cancel                                      |
+| Key      | Action                                 |
+| -------- | -------------------------------------- |
+| `Enter`  | Run the configured default action      |
+| `TAB`    | Multi-select results                   |
+| `Ctrl-y` | Copy selected result text              |
+| `Ctrl-s` | Send selected text to the current pane |
+| `Ctrl-p` | Print selected text to stdout          |
+| `ESC`    | Cancel                                 |
+
+Motion mode:
+
+| Key                      | Action                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------- |
+| `Prefix+s`               | Prompt for one character, draw hints over visible panes, then jump to the selected hint |
+| configured `motion2_key` | Prompt for two characters and jump to the selected matching pair                        |
+
+The two-character binding is disabled by default. Set
+`@tmux_history_finder_motion2_key` to enable it.
 
 ## Configuration
 
@@ -121,6 +140,9 @@ set -g @tmux_history_finder_default_action "jump"
 set -g @tmux_history_finder_scope "all"
 set -g @tmux_history_finder_prompt_query "0"
 set -g @tmux_history_finder_history_lines "0"
+set -g @tmux_history_finder_motion_key "s"
+set -g @tmux_history_finder_motion2_key "S"
+set -g @tmux_history_finder_motion_hints "asdghklqwertyuiopzxcvbnmfj;"
 ```
 
 Or use environment variables:
@@ -132,21 +154,34 @@ THF_TMUX_ARGS='-L work' bash ./history_finder.sh --scope session error
 
 Supported values:
 
-| Option / env var | Default | Values |
-| --- | --- | --- |
-| `launch_key` / `THF_LAUNCH_KEY` | `g` | tmux prefix binding |
-| `scope` / `THF_SCOPE` | `all` | `all`, `session`, `pane` |
-| `include_history` / `THF_INCLUDE_HISTORY` | `1` | `1` or `0` |
-| `history_lines` / `THF_HISTORY_LINES` | `0` | `0` for all history, or a positive line count |
-| `case` / `THF_CASE` | `smart` | `smart`, `sensitive`, `insensitive` |
-| `join_wraps` / `THF_JOIN_WRAPS` | `1` | `1` or `0` |
-| `skip_blank` / `THF_SKIP_BLANK` | `1` | `1` or `0` |
-| `preview` / `THF_PREVIEW` | `1` | `1` or `0` |
-| `prompt_query` / `THF_PROMPT_QUERY` | `0` | `1` asks for a query before capturing panes |
-| `default_action` / `THF_DEFAULT_ACTION` | `jump` | `jump`, `copy`, `send`, `print` |
-| `fzf_options` / `THF_FZF_OPTIONS` | empty | extra fzf arguments |
+| Option / env var                                                | Default                       | Values                                                  |
+| --------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------- |
+| `launch_key` / `THF_LAUNCH_KEY`                                 | `g`                           | tmux prefix binding                                     |
+| `scope` / `THF_SCOPE`                                           | `all`                         | `all`, `session`, `pane`                                |
+| `include_history` / `THF_INCLUDE_HISTORY`                       | `1`                           | `1` or `0`                                              |
+| `history_lines` / `THF_HISTORY_LINES`                           | `0`                           | `0` for all history, or a positive line count           |
+| `case` / `THF_CASE`                                             | `smart`                       | `smart`, `sensitive`, `insensitive`                     |
+| `join_wraps` / `THF_JOIN_WRAPS`                                 | `1`                           | `1` or `0`                                              |
+| `skip_blank` / `THF_SKIP_BLANK`                                 | `1`                           | `1` or `0`                                              |
+| `preview` / `THF_PREVIEW`                                       | `1`                           | `1` or `0`                                              |
+| `prompt_query` / `THF_PROMPT_QUERY`                             | `0`                           | `1` asks for a query before capturing panes             |
+| `default_action` / `THF_DEFAULT_ACTION`                         | `jump`                        | `jump`, `copy`, `send`, `print`                         |
+| `fzf_options` / `THF_FZF_OPTIONS`                               | empty                         | extra fzf arguments                                     |
+| `motion_key` / `THF_MOTION_KEY`                                 | `s`                           | tmux prefix binding for 1-character visible-pane motion |
+| `motion2_key` / `THF_MOTION2_KEY`                               | empty                         | tmux prefix binding for 2-character visible-pane motion |
+| `motion_hints` / `THF_MOTION_HINTS`                             | `asdghklqwertyuiopzxcvbnmfj;` | characters used for motion hints                        |
+| `motion_case` / `THF_MOTION_CASE`                               | `insensitive`                 | `smart`, `sensitive`, `insensitive`                     |
+| `motion_smartsign` / `THF_MOTION_SMARTSIGN`                     | `0`                           | `1` also matches shifted symbols such as `1` -> `!`     |
+| `motion_copy_mode_no_prefix` / `THF_MOTION_COPY_MODE_NO_PREFIX` | `0`                           | bind motion keys directly in copy-mode tables           |
+| `motion_hint1_fg` / `THF_MOTION_HINT1_FG`                       | `1;31`                        | SGR color for the first hint character                  |
+| `motion_hint2_fg` / `THF_MOTION_HINT2_FG`                       | `1;32`                        | SGR color for the second hint character                 |
+| `motion_dim` / `THF_MOTION_DIM`                                 | `2`                           | SGR color for dimmed pane borders                       |
 
 CLI flags override configuration for that run.
+
+Motion hints use the configured characters as a prefix-free key set. When a
+common match produces more targets than one- or two-character hints can cover,
+farther targets use longer hints instead of being dropped.
 
 When `prompt_query` is enabled for the tmux binding, pressing the launch key
 opens a tmux prompt first. Empty input cancels without capturing pane history.
@@ -165,17 +200,35 @@ picker would capture and index more scrollback than needed.
    record ID against the same snapshot.
 5. Actions call tmux directly to jump, copy, send, or print.
 
+Motion mode uses a separate visible-screen path. It captures only the panes in
+the current tmux window, searches their visible text, draws an ANSI hint overlay
+in a borderless tmux popup, then selects the target pane and moves the copy-mode
+cursor to the selected screen row and column.
+
 ## Development
 
 ```sh
 cargo fmt --check
-cargo test
-cargo build
-shellcheck -x --source-path=SCRIPTDIR history_finder.sh tmux_history_finder.tmux scripts/*.sh
+cargo clippy --locked --all-targets -- -D warnings
+env -u TMUX -u TMUX_PANE cargo test --locked
+cargo build --locked
+shellcheck -x --source-path=SCRIPTDIR \
+  history_finder.sh tmux_history_finder.tmux scripts/*.sh tests/*.sh
+bash tests/install-binary.sh
+env -u TMUX -u TMUX_PANE bash tests/shell-quoting.sh
+env -u TMUX -u TMUX_PANE bash tests/tmux-integration.sh
 ```
+
+The tmux integration tests require `tmux`; picker workflows and CI also require
+`fzf`. Every test server uses its own explicit tmux socket.
 
 Use `bash ./history_finder.sh doctor` to verify local dependencies and resolved
 configuration.
+
+## Inspired by
+
+- [tmux-fzf](https://github.com/sainnhe/tmux-fzf)
+- [tmux-easymotion](https://github.com/ddzero2c/tmux-easymotion)
 
 ## License
 

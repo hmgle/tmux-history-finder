@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::{
-    index::{LegacyRecord, PaneSnapshot, Record, SearchIndex},
+    index::{LegacyRecord, PaneSnapshot, SearchIndex},
     tmux,
     util::trim_prefix_chars,
 };
@@ -20,7 +20,12 @@ pub fn print_index_preview(
         return Ok(());
     };
 
-    print_window(pane, record);
+    print_window(pane, record.line_index);
+    Ok(())
+}
+
+pub fn print_pane_preview(pane: &PaneSnapshot, line_index: usize) -> Result<()> {
+    print_window(pane, line_index);
     Ok(())
 }
 
@@ -47,51 +52,32 @@ pub fn print_legacy_preview(record: &LegacyRecord) -> Result<()> {
             .unwrap_or_else(|| record.line_no.saturating_sub(1))
     };
     let pane = PaneSnapshot {
-        session: record
-            .location
-            .split(':')
-            .next()
-            .unwrap_or_default()
-            .to_string(),
-        window_index: String::new(),
-        pane_index: String::new(),
+        location: record.location.clone(),
         pane_id: record.pane_id.clone(),
         command: record.command.clone(),
         window_name: record.window_name.clone(),
         history_start_line: 0,
         lines,
     };
-    let preview_record = Record {
-        id: 0,
-        pane_index: 0,
-        raw_line_no: target + 1,
-        logical_line_no: target + 1,
-        location: record.location.clone(),
-        text: record.text.clone(),
-        before: None,
-        after: None,
-    };
-    print_window(&pane, &preview_record);
+    print_window(&pane, target);
     Ok(())
 }
 
-fn print_window(pane: &PaneSnapshot, record: &Record) {
+fn print_window(pane: &PaneSnapshot, line_index: usize) {
     if pane.lines.is_empty() {
         println!("(no pane content)");
         return;
     }
 
-    let target = record
-        .raw_line_no
-        .saturating_sub(1)
-        .min(pane.lines.len() - 1);
+    let target = line_index.min(pane.lines.len() - 1);
     let half = 10usize;
     let start = target.saturating_sub(half);
     let end = (target + half + 1).min(pane.lines.len());
 
     println!(
         "\x1b[1;36m{}\x1b[0m  \x1b[2m({})\x1b[0m",
-        record.location, pane.command
+        pane.location(),
+        pane.command
     );
     println!(
         "\x1b[2mlines {}-{} of {}\x1b[0m\n",
