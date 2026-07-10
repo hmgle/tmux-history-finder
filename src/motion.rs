@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     ffi::OsString,
     io::{self, Read, Write},
     os::fd::AsRawFd,
@@ -52,9 +52,9 @@ pub struct MotionArgs {
     pub overlay: bool,
     #[arg(long = "case", value_enum)]
     pub case_mode: Option<CaseMode>,
-    #[arg(long = "smartsign")]
+    #[arg(long = "smartsign", conflicts_with = "no_smartsign")]
     pub smartsign: bool,
-    #[arg(long = "no-smartsign")]
+    #[arg(long = "no-smartsign", conflicts_with = "smartsign")]
     pub no_smartsign: bool,
 }
 
@@ -973,6 +973,9 @@ fn generate_hints(keys: &str, needed_count: usize) -> Vec<String> {
     if key_count == 0 {
         return Vec::new();
     }
+    if key_count == 1 && needed_count > 1 {
+        return Vec::new();
+    }
     if needed_count <= key_count {
         return keys
             .iter()
@@ -981,25 +984,27 @@ fn generate_hints(keys: &str, needed_count: usize) -> Vec<String> {
             .collect();
     }
 
-    let mut hints: Vec<String> = keys.iter().map(char::to_string).collect();
-    while hints.len() < needed_count {
-        let shortest = hints
-            .iter()
-            .map(|hint| hint.chars().count())
-            .min()
-            .unwrap_or_default();
-        let index = hints
-            .iter()
-            .rposition(|hint| hint.chars().count() == shortest)
-            .expect("hint list is non-empty");
-        let prefix = hints.remove(index);
-        let children = keys.iter().map(|key| {
+    let mut levels = BTreeMap::<usize, Vec<String>>::new();
+    levels.insert(1, keys.iter().map(char::to_string).collect());
+    let mut leaf_count = key_count;
+    while leaf_count < needed_count {
+        let shortest = *levels.keys().next().expect("hint levels are non-empty");
+        let prefix = levels
+            .get_mut(&shortest)
+            .and_then(Vec::pop)
+            .expect("shortest hint level is non-empty");
+        if levels.get(&shortest).is_some_and(Vec::is_empty) {
+            levels.remove(&shortest);
+        }
+        let children = levels.entry(shortest + 1).or_default();
+        children.extend(keys.iter().map(|key| {
             let mut hint = prefix.clone();
             hint.push(*key);
             hint
-        });
-        hints.splice(index..index, children);
+        }));
+        leaf_count += key_count - 1;
     }
+    let mut hints: Vec<String> = levels.into_values().flatten().collect();
     hints.truncate(needed_count);
     hints
 }
@@ -1545,6 +1550,12 @@ mod tests {
     #[test]
     fn generate_hints_ignores_duplicate_keys() {
         assert_eq!(generate_hints("aabb", 2), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn generate_hints_rejects_an_insufficient_alphabet() {
+        assert!(generate_hints("a", 2).is_empty());
+        assert!(generate_hints("aaaa", 3).is_empty());
     }
 
     #[test]

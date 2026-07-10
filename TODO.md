@@ -9,22 +9,22 @@ Items are ordered by user impact and intended commit sequence.
   incompatible `v0.4.1` backend.
 - [ ] Refuse automatic release downloads from an untagged Git checkout and
   verify an existing cached backend version before using it.
-- [ ] Make motion hint generation terminate for zero or one distinct hint key.
-- [ ] Replace the quadratic hint expansion algorithm with bounded linear work.
-- [ ] Preserve the full-history line offset for visible-only captures.
+- [x] Make motion hint generation terminate for zero or one distinct hint key.
+- [x] Replace the quadratic hint expansion algorithm with bounded linear work.
+- [x] Preserve the full-history line offset for visible-only captures.
 - [ ] Add a regression test for jumping to a visible duplicate with
   `--no-history`.
-- [ ] Stop passing Rust prefilter queries through fzf's unrelated query syntax.
-- [ ] Distinguish fzf cancellation from invocation and configuration failures.
-- [ ] Make case-insensitive literal search Unicode-aware.
+- [x] Stop passing Rust prefilter queries through fzf's unrelated query syntax.
+- [x] Distinguish fzf cancellation from invocation and configuration failures.
+- [x] Make case-insensitive literal search Unicode-aware.
 
 ## 2. Configuration and error handling
 
-- [ ] Return actionable errors for invalid environment and tmux option values.
-- [ ] Reject conflicting CLI flags such as `--history --no-history`.
-- [ ] Preserve pane capture failures instead of silently dropping panes.
-- [ ] Propagate jump and tmux-buffer failures with operation context.
-- [ ] Replace malformed shell-word fallback parsing with explicit errors.
+- [x] Return actionable errors for invalid environment and tmux option values.
+- [x] Reject conflicting CLI flags such as `--history --no-history`.
+- [x] Preserve pane capture failures instead of silently dropping panes.
+- [x] Propagate jump and tmux-buffer failures with operation context.
+- [x] Replace malformed shell-word fallback parsing with explicit errors.
 - [ ] Introduce a typed, injectable tmux client instead of process-global test
   configuration.
 
@@ -50,8 +50,8 @@ Items are ordered by user impact and intended commit sequence.
 - [ ] Validate archive contents before extraction.
 - [ ] Quote all deferred `tmux run-shell` commands for paths containing spaces
   or quotes.
-- [ ] Sanitize fzf display fields and remove unnecessary ANSI interpretation.
-- [ ] Validate motion hints, border cells, and SGR configuration.
+- [x] Sanitize fzf display fields and remove unnecessary ANSI interpretation.
+- [x] Validate motion hints, border cells, and SGR configuration.
 - [ ] Use a real raw terminal mode that allows graceful Ctrl-C cleanup.
 - [ ] Drain trailing escape-sequence bytes on overlay cancellation.
 - [ ] Prevent hint restoration and drawing from crossing pane boundaries.
@@ -60,7 +60,7 @@ Items are ordered by user impact and intended commit sequence.
 
 - [ ] Split `motion.rs` into capture, matching, hint, rendering, terminal, and
   navigation modules.
-- [ ] Add unit tests for hint termination/prefix freedom, Unicode search,
+- [x] Add unit tests for hint termination/prefix freedom, Unicode search,
   configuration errors, fzf statuses, and display sanitization.
 - [ ] Add isolated tmux integration tests for visible-only duplicate jumps,
   limited history, wrapped lines, disappearing panes, and cross-pane motion.

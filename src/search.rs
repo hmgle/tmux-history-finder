@@ -24,11 +24,25 @@ pub fn filter_record_ids(
 
 fn filter_literal(index: &SearchIndex, query: &str, case_mode: CaseMode) -> Vec<usize> {
     let sensitive = case_mode.is_sensitive_for(query);
+    let unicode_insensitive = (!sensitive && !query.is_ascii()).then(|| {
+        RegexBuilder::new(&regex::escape(query))
+            .case_insensitive(true)
+            .build()
+            .expect("escaped literal regex is valid")
+    });
 
     index
         .records
         .iter()
-        .filter(|record| literal_match(index, record, query, sensitive))
+        .filter(|record| {
+            literal_match(
+                index,
+                record,
+                query,
+                sensitive,
+                unicode_insensitive.as_ref(),
+            )
+        })
         .map(|record| record.id)
         .collect()
 }
@@ -48,27 +62,41 @@ fn filter_regex(index: &SearchIndex, query: &str, case_mode: CaseMode) -> Result
         .collect())
 }
 
-fn literal_match(index: &SearchIndex, record: &Record, needle: &str, sensitive: bool) -> bool {
+fn literal_match(
+    index: &SearchIndex,
+    record: &Record,
+    needle: &str,
+    sensitive: bool,
+    unicode_insensitive: Option<&regex::Regex>,
+) -> bool {
     if needle.contains('\t') {
-        return searchable_text(index, record)
-            .is_some_and(|haystack| field_contains(&haystack, needle, sensitive));
+        return searchable_text(index, record).is_some_and(|haystack| {
+            field_contains(&haystack, needle, sensitive, unicode_insensitive)
+        });
     }
 
-    if field_contains(&record.location, needle, sensitive)
-        || field_contains(&record.text, needle, sensitive)
+    if field_contains(&record.location, needle, sensitive, unicode_insensitive)
+        || field_contains(&record.text, needle, sensitive, unicode_insensitive)
     {
         return true;
     }
 
     index.pane_for(record).is_some_and(|pane| {
-        field_contains(&pane.command, needle, sensitive)
-            || field_contains(&pane.window_name, needle, sensitive)
+        field_contains(&pane.command, needle, sensitive, unicode_insensitive)
+            || field_contains(&pane.window_name, needle, sensitive, unicode_insensitive)
     })
 }
 
-fn field_contains(haystack: &str, needle: &str, sensitive: bool) -> bool {
+fn field_contains(
+    haystack: &str,
+    needle: &str,
+    sensitive: bool,
+    unicode_insensitive: Option<&regex::Regex>,
+) -> bool {
     if sensitive {
         haystack.contains(needle)
+    } else if let Some(regex) = unicode_insensitive {
+        regex.is_match(haystack)
     } else {
         contains_ascii_case_insensitive(haystack, needle)
     }
@@ -266,6 +294,21 @@ mod tests {
             filter_record_ids(
                 &index_with_pane_metadata(),
                 Some("1.0\tzshshell"),
+                &config(CaseMode::Insensitive, SearchMode::Literal)
+            )
+            .unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn literal_search_is_unicode_case_insensitive() {
+        let mut index = index();
+        index.records[0].text = "ÄPFEL".into();
+        assert_eq!(
+            filter_record_ids(
+                &index,
+                Some("äpfel"),
                 &config(CaseMode::Insensitive, SearchMode::Literal)
             )
             .unwrap(),

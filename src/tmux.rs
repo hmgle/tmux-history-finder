@@ -10,24 +10,23 @@ pub fn have(program: &str) -> bool {
     which::which(program).is_ok()
 }
 
-fn tmux_args_from_env() -> Vec<OsString> {
+fn tmux_args_from_env() -> Result<Vec<OsString>> {
     let Some(raw) = std::env::var_os("THF_TMUX_ARGS") else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let raw = raw.to_string_lossy();
     if raw.trim().is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    match shell_words::split(&raw) {
-        Ok(parts) => parts.into_iter().map(OsString::from).collect(),
-        Err(_) => raw.split_whitespace().map(OsString::from).collect(),
-    }
+    shell_words::split(&raw)
+        .context("failed to parse THF_TMUX_ARGS")
+        .map(|parts| parts.into_iter().map(OsString::from).collect())
 }
 
-pub fn command() -> Command {
+pub fn command() -> Result<Command> {
     let mut cmd = Command::new("tmux");
-    cmd.args(tmux_args_from_env());
-    cmd
+    cmd.args(tmux_args_from_env()?);
+    Ok(cmd)
 }
 
 pub fn output<I, S>(args: I) -> Result<Output>
@@ -35,7 +34,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = command()
+    let output = command()?
         .args(args)
         .output()
         .context("failed to execute tmux")?;
@@ -99,17 +98,14 @@ pub fn show_option(name: &str) -> Option<String> {
     try_stdout(["show-option", "-gqv", name]).filter(|value| !value.is_empty())
 }
 
-pub fn show_options(prefix: &str) -> Vec<(String, String)> {
-    let Ok(output) = stdout(["show-options", "-gq"]) else {
-        return Vec::new();
-    };
-
-    output
+pub fn show_options(prefix: &str) -> Result<Vec<(String, String)>> {
+    let output = stdout(["show-options", "-gq"])?;
+    Ok(output
         .lines()
         .filter_map(parse_show_option_line)
         .filter(|(name, _)| name.starts_with(prefix))
         .filter(|(_, value)| !value.is_empty())
-        .collect()
+        .collect())
 }
 
 fn parse_show_option_line(line: &str) -> Option<(String, String)> {

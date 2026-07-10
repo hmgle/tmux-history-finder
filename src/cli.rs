@@ -44,9 +44,9 @@ struct SearchArgs {
     action: Option<ActionKind>,
     #[arg(long = "case", value_enum)]
     case_mode: Option<CaseMode>,
-    #[arg(long = "no-history")]
+    #[arg(long = "no-history", conflicts_with = "history")]
     no_history: bool,
-    #[arg(long = "history")]
+    #[arg(long = "history", conflicts_with = "no_history")]
     history: bool,
     #[arg(long = "history-lines", value_name = "LINES")]
     history_lines: Option<usize>,
@@ -76,9 +76,9 @@ struct CaptureArgs {
     positional_output: Option<PathBuf>,
     #[arg(short = 's', long = "scope", value_enum)]
     scope: Option<Scope>,
-    #[arg(long = "no-history")]
+    #[arg(long = "no-history", conflicts_with = "history")]
     no_history: bool,
-    #[arg(long = "history")]
+    #[arg(long = "history", conflicts_with = "no_history")]
     history: bool,
     #[arg(long = "history-lines", value_name = "LINES")]
     history_lines: Option<usize>,
@@ -203,7 +203,7 @@ fn normalize_args() -> Vec<OsString> {
 
 fn run_search(args: SearchArgs) -> Result<()> {
     ensure_tmux()?;
-    let config = Config::load(&args.overrides());
+    let config = Config::load(&args.overrides())?;
     let query = args.resolved_query();
     if args.require_query && query.is_none() {
         return Ok(());
@@ -253,7 +253,7 @@ fn run_search(args: SearchArgs) -> Result<()> {
 
 fn run_capture(args: CaptureArgs) -> Result<()> {
     ensure_tmux()?;
-    let config = Config::load(&args.overrides());
+    let config = Config::load(&args.overrides())?;
     let output = capture::legacy_tsv(&config, args.target_pane.as_deref())?;
 
     if let Some(path) = args.output_path() {
@@ -280,7 +280,7 @@ fn run_preview(args: PreviewArgs) -> Result<()> {
 }
 
 fn run_action(args: ActionArgs) -> Result<()> {
-    let config = Config::load(&ConfigOverrides::default());
+    let config = Config::load(&ConfigOverrides::default())?;
     let action = args.action.unwrap_or(config.default_action);
 
     if let (Some(index_path), Some(record_id)) = (args.index.as_ref(), args.record_id) {
@@ -298,7 +298,7 @@ fn run_action(args: ActionArgs) -> Result<()> {
 
 fn run_motion(args: motion::MotionArgs) -> Result<()> {
     ensure_tmux()?;
-    let config = Config::load(&ConfigOverrides::default());
+    let config = Config::load(&ConfigOverrides::default())?;
     motion::run(args, &config)
 }
 
@@ -312,7 +312,7 @@ fn run_doctor() -> Result<()> {
     );
     println!("rg: {}", describe_program("rg", &["--version"], false));
     println!("clipboard: {}", clipboard_status());
-    let config = Config::load(&ConfigOverrides::default());
+    let config = Config::load(&ConfigOverrides::default())?;
     println!(
         "config: key={} scope={} action={} preview={} prompt_query={} history={} history_lines={} join_wraps={}",
         config.launch_key,

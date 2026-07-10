@@ -42,11 +42,17 @@ pub fn run_picker(
     }
 
     let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Ok(PickerResult {
-            action: config.default_action,
-            record_ids: Vec::new(),
-        });
+    match picker_exit(output.status.code()) {
+        PickerExit::Selected => {}
+        PickerExit::Cancelled => {
+            return Ok(PickerResult {
+                action: config.default_action,
+                record_ids: Vec::new(),
+            });
+        }
+        PickerExit::Failed => {
+            anyhow::bail!("fzf exited with status {}", output.status);
+        }
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -60,9 +66,20 @@ pub fn run_picker(
     };
 
     let record_ids = lines
-        .filter_map(|line| line.split('\t').next())
-        .filter_map(|id| id.parse::<usize>().ok())
-        .collect();
+        .map(|line| {
+            let id = line
+                .split('\t')
+                .next()
+                .context("fzf returned an empty row")?;
+            let id = id
+                .parse::<usize>()
+                .with_context(|| format!("fzf returned invalid record id '{id}'"))?;
+            index
+                .record(id)
+                .with_context(|| format!("fzf returned unknown record id {id}"))?;
+            Ok(id)
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(PickerResult { action, record_ids })
 }
@@ -85,7 +102,6 @@ fn picker_args(config: &Config, query: Option<&str>, index_path: &Path) -> Resul
         "\t".into(),
         "--with-nth".into(),
         "2,3,4,5,6".into(),
-        "--ansi".into(),
         "--layout=reverse".into(),
         "--info=inline".into(),
         "--prompt".into(),
@@ -120,18 +136,9 @@ fn picker_args(config: &Config, query: Option<&str>, index_path: &Path) -> Resul
         ]);
     }
 
-    if let Some(query) = query.filter(|value| !value.is_empty()) {
-        args.extend(["--query".into(), query.into()]);
-    }
-
     if !config.fzf_options.trim().is_empty() {
-        let extra = shell_words::split(&config.fzf_options).unwrap_or_else(|_| {
-            config
-                .fzf_options
-                .split_whitespace()
-                .map(ToOwned::to_owned)
-                .collect()
-        });
+        let extra = shell_words::split(&config.fzf_options)
+            .context("failed to parse fzf_options/THF_FZF_OPTIONS")?;
         args.extend(extra.into_iter().map(OsString::from));
     }
 
@@ -141,11 +148,42 @@ fn picker_args(config: &Config, query: Option<&str>, index_path: &Path) -> Resul
 fn display_line(index: &SearchIndex, record_id: usize) -> Option<String> {
     let record = index.record(record_id)?;
     let pane = index.pane_for(record)?;
-    let text = record.text.replace('\t', "    ");
+    let location = sanitize_field(&record.location);
+    let command = sanitize_field(&pane.command);
+    let window_name = sanitize_field(&pane.window_name);
+    let text = sanitize_field(&record.text);
     Some(format!(
         "{}\t{}\t{}\t{}\t{}\t{}",
-        record.id, record.location, pane.command, pane.window_name, record.raw_line_no, text
+        record.id, location, command, window_name, record.raw_line_no, text
     ))
+}
+
+fn sanitize_field(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch == '\t' || ch.is_control() {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PickerExit {
+    Selected,
+    Cancelled,
+    Failed,
+}
+
+fn picker_exit(code: Option<i32>) -> PickerExit {
+    match code {
+        Some(0) => PickerExit::Selected,
+        Some(1) | Some(130) => PickerExit::Cancelled,
+        _ => PickerExit::Failed,
+    }
 }
 
 fn supports_popup() -> bool {
@@ -176,12 +214,26 @@ fn first_major_minor(value: &str) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::version_at_least;
+    use super::{picker_exit, sanitize_field, version_at_least, PickerExit};
 
     #[test]
     fn parses_versions() {
         assert!(version_at_least("tmux 3.3a", 3, 2));
         assert!(version_at_least("0.60.0 (abc)", 0, 23));
         assert!(!version_at_least("tmux 3.1", 3, 2));
+    }
+
+    #[test]
+    fn classifies_picker_exit_codes() {
+        assert_eq!(picker_exit(Some(0)), PickerExit::Selected);
+        assert_eq!(picker_exit(Some(1)), PickerExit::Cancelled);
+        assert_eq!(picker_exit(Some(130)), PickerExit::Cancelled);
+        assert_eq!(picker_exit(Some(2)), PickerExit::Failed);
+        assert_eq!(picker_exit(None), PickerExit::Failed);
+    }
+
+    #[test]
+    fn sanitizes_fzf_display_fields() {
+        assert_eq!(sanitize_field("a\tb\x1b[2J\nc"), "a b [2J c");
     }
 }

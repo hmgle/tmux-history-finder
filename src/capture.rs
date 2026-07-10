@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::{
@@ -23,8 +23,11 @@ pub fn build_index(config: &Config, target_pane: Option<&str>) -> Result<SearchI
     let panes = list_panes(config.scope, target_pane)?;
     let snapshots: Vec<PaneSnapshot> = panes
         .par_iter()
-        .filter_map(|pane| capture_pane(pane, config).ok())
-        .collect();
+        .map(|pane| {
+            capture_pane(pane, config)
+                .with_context(|| format!("failed to capture pane {}", pane.pane_id))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let mut records = Vec::new();
     for (pane_index, pane) in snapshots.iter().enumerate() {
@@ -65,8 +68,11 @@ pub fn legacy_tsv(config: &Config, target_pane: Option<&str>) -> Result<String> 
     let panes = list_panes(config.scope, target_pane)?;
     let chunks: Vec<String> = panes
         .par_iter()
-        .filter_map(|pane| capture_pane_legacy_tsv(pane, config).ok())
-        .collect();
+        .map(|pane| {
+            capture_pane_legacy_tsv(pane, config)
+                .with_context(|| format!("failed to capture pane {}", pane.pane_id))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(chunks.concat())
 }
@@ -196,6 +202,9 @@ fn history_start(config: &Config) -> String {
 }
 
 fn history_start_line(pane: &PaneInfo, config: &Config) -> usize {
+    if !config.include_history {
+        return pane.history_size;
+    }
     config
         .history_lines
         .map(|lines| pane.history_size.saturating_sub(lines))
@@ -273,6 +282,13 @@ mod tests {
     #[test]
     fn limited_history_offset_saturates_for_short_history() {
         assert_eq!(history_start_line(&pane(100), &config(Some(5000))), 0);
+    }
+
+    #[test]
+    fn visible_only_capture_starts_after_scrollback() {
+        let mut config = config(Some(5000));
+        config.include_history = false;
+        assert_eq!(history_start_line(&pane(10_000), &config), 10_000);
     }
 
     #[test]
