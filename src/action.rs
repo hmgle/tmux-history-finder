@@ -1,8 +1,10 @@
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result};
 
 use crate::{
     config::Config,
-    index::{LegacyRecord, Record, SearchIndex},
+    index::{LegacyRecord, SearchIndex},
     tmux,
     types::ActionKind,
     util::trim_prefix_chars,
@@ -136,9 +138,9 @@ fn copy_text(text: &str) -> Result<()> {
     tmux::run(["set-buffer", "--", text]).context("failed to update tmux buffer")?;
 
     let mut tried_clipboard = false;
-    for (program, args) in clipboard_commands() {
+    for command in clipboard_commands() {
         tried_clipboard = true;
-        if tmux::write_to_command(program, &args, text).is_ok() {
+        if tmux::write_to_command(command.program, command.args, text).is_ok() {
             return Ok(());
         }
     }
@@ -154,27 +156,39 @@ fn copy_text(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn clipboard_commands() -> Vec<(&'static str, Vec<&'static str>)> {
-    [
-        ("pbcopy", vec![]),
-        ("wl-copy", vec![]),
-        ("xclip", vec!["-selection", "clipboard"]),
-        ("xsel", vec!["--clipboard", "--input"]),
-        ("clip.exe", vec![]),
-    ]
-    .into_iter()
-    .filter(|(program, _)| tmux::have(program))
-    .collect()
+struct ClipboardCommand {
+    program: &'static str,
+    args: &'static [&'static str],
 }
 
-#[allow(dead_code)]
-fn _record_target<'a>(index: &'a SearchIndex, record: &'a Record) -> Option<ActionTarget<'a>> {
-    let pane = index.pane_for(record)?;
-    Some(ActionTarget {
-        pane_id: &pane.pane_id,
-        location: pane.location(),
-        raw_line_no: record.raw_line_no(),
-        text: index.text_for(record)?,
+fn clipboard_commands() -> &'static [ClipboardCommand] {
+    static COMMANDS: OnceLock<Vec<ClipboardCommand>> = OnceLock::new();
+    COMMANDS.get_or_init(|| {
+        [
+            ClipboardCommand {
+                program: "pbcopy",
+                args: &[],
+            },
+            ClipboardCommand {
+                program: "wl-copy",
+                args: &[],
+            },
+            ClipboardCommand {
+                program: "xclip",
+                args: &["-selection", "clipboard"],
+            },
+            ClipboardCommand {
+                program: "xsel",
+                args: &["--clipboard", "--input"],
+            },
+            ClipboardCommand {
+                program: "clip.exe",
+                args: &[],
+            },
+        ]
+        .into_iter()
+        .filter(|command| tmux::have(command.program))
+        .collect()
     })
 }
 
