@@ -30,12 +30,12 @@ Items are ordered by user impact and intended commit sequence.
 
 ## 3. Memory and startup performance
 
-- [ ] Store record coordinates instead of cloning pane text and metadata per
+- [x] Store record coordinates instead of cloning pane text and metadata per
   searchable line.
-- [ ] Remove unused `before`, `after`, and logical line fields.
-- [ ] Stream index serialization instead of building a second JSON buffer.
-- [ ] Store pane snapshots separately so fzf preview loads only one pane.
-- [ ] Stream legacy TSV output to the destination writer with bounded memory.
+- [x] Remove unused `before`, `after`, and logical line fields.
+- [x] Stream index serialization instead of building a second JSON buffer.
+- [x] Store pane snapshots separately so fzf preview loads only one pane.
+- [x] Stream legacy TSV output to the destination writer with bounded memory.
 - [ ] Avoid rebuilding action targets and clipboard discovery per selected row.
 - [ ] Avoid duplicate capture/search work when motion opens its popup.
 - [ ] Sort pane references rather than cloning pane contents.

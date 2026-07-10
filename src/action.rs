@@ -27,14 +27,17 @@ pub fn execute(
     let pane = index
         .pane_for(record)
         .context("pane not found for record")?;
-    let history_line_no = history_line_no(pane.history_start_line, record.raw_line_no);
+    let text = index
+        .text_for(record)
+        .context("text not found for record")?;
+    let history_line_no = history_line_no(pane.history_start_line, record.raw_line_no());
     perform(
         action,
         &ActionTarget {
             pane_id: &pane.pane_id,
-            location: &record.location,
+            location: pane.location(),
             raw_line_no: history_line_no,
-            text: &record.text,
+            text,
         },
     )
 }
@@ -169,9 +172,9 @@ fn _record_target<'a>(index: &'a SearchIndex, record: &'a Record) -> Option<Acti
     let pane = index.pane_for(record)?;
     Some(ActionTarget {
         pane_id: &pane.pane_id,
-        location: &record.location,
-        raw_line_no: record.raw_line_no,
-        text: &record.text,
+        location: pane.location(),
+        raw_line_no: record.raw_line_no(),
+        text: index.text_for(record)?,
     })
 }
 

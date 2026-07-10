@@ -1,4 +1,9 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    fs::File,
+    io::{self, BufWriter, Write},
+    path::PathBuf,
+};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -98,6 +103,10 @@ struct PreviewArgs {
     index: Option<PathBuf>,
     #[arg(long = "record-id")]
     record_id: Option<usize>,
+    #[arg(long = "pane-index", hide = true)]
+    pane_index: Option<usize>,
+    #[arg(long = "line-index", hide = true)]
+    line_index: Option<usize>,
     #[arg(long = "query")]
     query: Option<String>,
     #[arg(value_name = "LEGACY_RECORD")]
@@ -233,18 +242,11 @@ fn run_search(args: SearchArgs) -> Result<()> {
     }
 
     ensure_fzf()?;
-    let index_file = Builder::new()
-        .prefix("thf_index.")
-        .suffix(".json")
-        .tempfile()?;
-    index.save(index_file.path())?;
-    let picked = fzf::run_picker(
-        &index,
-        &record_ids,
-        &config,
-        query.as_deref(),
-        index_file.path(),
-    )?;
+    let preview_dir = Builder::new().prefix("thf_preview.").tempdir()?;
+    if config.preview {
+        index.save_preview_panes(preview_dir.path())?;
+    }
+    let picked = fzf::run_picker(&index, &record_ids, &config, preview_dir.path())?;
     for record_id in picked.record_ids {
         action::execute(&index, record_id, picked.action, &config)?;
     }
@@ -254,18 +256,31 @@ fn run_search(args: SearchArgs) -> Result<()> {
 fn run_capture(args: CaptureArgs) -> Result<()> {
     ensure_tmux()?;
     let config = Config::load(&args.overrides())?;
-    let output = capture::legacy_tsv(&config, args.target_pane.as_deref())?;
-
     if let Some(path) = args.output_path() {
-        std::fs::write(path, output)
+        let file =
+            File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+        let mut writer = BufWriter::new(file);
+        capture::write_legacy_tsv(&config, args.target_pane.as_deref(), &mut writer)?;
+        writer
+            .flush()
             .with_context(|| format!("failed to write {}", path.display()))?;
     } else {
-        print!("{output}");
+        let stdout = io::stdout();
+        let mut writer = stdout.lock();
+        capture::write_legacy_tsv(&config, args.target_pane.as_deref(), &mut writer)?;
+        writer.flush()?;
     }
     Ok(())
 }
 
 fn run_preview(args: PreviewArgs) -> Result<()> {
+    if let (Some(index_path), Some(pane_index), Some(line_index)) =
+        (args.index.as_ref(), args.pane_index, args.line_index)
+    {
+        let pane = index::SearchIndex::load_preview_pane(index_path, pane_index)?;
+        return preview::print_pane_preview(&pane, line_index);
+    }
+
     if let (Some(index_path), Some(record_id)) = (args.index.as_ref(), args.record_id) {
         let index = index::SearchIndex::load(index_path)?;
         return preview::print_index_preview(&index, record_id, args.query.as_deref());

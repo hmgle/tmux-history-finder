@@ -18,11 +18,10 @@ pub fn run_picker(
     index: &SearchIndex,
     record_ids: &[usize],
     config: &Config,
-    query: Option<&str>,
     index_path: &Path,
 ) -> Result<PickerResult> {
     let mut command = picker_command();
-    let args = picker_args(config, query, index_path)?;
+    let args = picker_args(config, index_path)?;
     command.args(args);
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
 
@@ -96,12 +95,12 @@ fn picker_command() -> Command {
     }
 }
 
-fn picker_args(config: &Config, query: Option<&str>, index_path: &Path) -> Result<Vec<OsString>> {
+fn picker_args(config: &Config, index_path: &Path) -> Result<Vec<OsString>> {
     let mut args = vec![
         "--delimiter".into(),
         "\t".into(),
         "--with-nth".into(),
-        "2,3,4,5,6".into(),
+        "4,5,6,7,8".into(),
         "--layout=reverse".into(),
         "--info=inline".into(),
         "--prompt".into(),
@@ -121,12 +120,9 @@ fn picker_args(config: &Config, query: Option<&str>, index_path: &Path) -> Resul
     if config.preview {
         let exe = std::env::current_exe().context("failed to resolve current executable")?;
         let preview = format!(
-            "{} preview --index {} --record-id {{1}}{}",
+            "{} preview --index {} --pane-index {{2}} --line-index {{3}}",
             shell_quote(&exe.to_string_lossy()),
             shell_quote(&index_path.to_string_lossy()),
-            query
-                .map(|value| format!(" --query {}", shell_quote(value)))
-                .unwrap_or_default()
         );
         args.extend([
             "--preview-window".into(),
@@ -148,13 +144,20 @@ fn picker_args(config: &Config, query: Option<&str>, index_path: &Path) -> Resul
 fn display_line(index: &SearchIndex, record_id: usize) -> Option<String> {
     let record = index.record(record_id)?;
     let pane = index.pane_for(record)?;
-    let location = sanitize_field(&record.location);
+    let location = sanitize_field(pane.location());
     let command = sanitize_field(&pane.command);
     let window_name = sanitize_field(&pane.window_name);
-    let text = sanitize_field(&record.text);
+    let text = sanitize_field(index.text_for(record)?);
     Some(format!(
-        "{}\t{}\t{}\t{}\t{}\t{}",
-        record.id, location, command, window_name, record.raw_line_no, text
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        record_id,
+        record.pane_index,
+        record.line_index,
+        location,
+        command,
+        window_name,
+        record.raw_line_no(),
+        text
     ))
 }
 
@@ -214,7 +217,41 @@ fn first_major_minor(value: &str) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{picker_exit, sanitize_field, version_at_least, PickerExit};
+    use std::path::Path;
+
+    use super::{picker_args, picker_exit, sanitize_field, version_at_least, PickerExit};
+    use crate::{
+        config::Config,
+        types::{ActionKind, CaseMode, Scope, SearchMode},
+    };
+
+    fn config(preview: bool) -> Config {
+        Config {
+            launch_key: "g".into(),
+            motion_key: "s".into(),
+            motion2_key: String::new(),
+            motion_copy_mode_no_prefix: false,
+            scope: Scope::All,
+            include_history: true,
+            history_lines: None,
+            case_mode: CaseMode::Smart,
+            join_wraps: true,
+            skip_blank: true,
+            preview,
+            prompt_query: false,
+            default_action: ActionKind::Jump,
+            fzf_options: String::new(),
+            search_mode: SearchMode::Literal,
+            motion_hints: "asdf".into(),
+            motion_case_mode: CaseMode::Insensitive,
+            motion_smartsign: false,
+            motion_vertical_border: "|".into(),
+            motion_horizontal_border: "-".into(),
+            motion_hint1_fg: "1;31".into(),
+            motion_hint2_fg: "1;32".into(),
+            motion_dim: "2".into(),
+        }
+    }
 
     #[test]
     fn parses_versions() {
@@ -235,5 +272,24 @@ mod tests {
     #[test]
     fn sanitizes_fzf_display_fields() {
         assert_eq!(sanitize_field("a\tb\x1b[2J\nc"), "a b [2J c");
+    }
+
+    #[test]
+    fn picker_uses_hidden_preview_coordinates_without_seeding_query() {
+        let args = picker_args(&config(true), Path::new("/tmp/preview dir")).unwrap();
+        let args: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.iter().any(|arg| arg == "--query"));
+        assert!(args.iter().any(|arg| arg == "4,5,6,7,8"));
+        let preview = args
+            .iter()
+            .skip_while(|arg| *arg != "--preview")
+            .nth(1)
+            .unwrap();
+        assert!(preview.contains("--pane-index {2}"));
+        assert!(preview.contains("--line-index {3}"));
+        assert!(preview.contains("'/tmp/preview dir'"));
     }
 }
