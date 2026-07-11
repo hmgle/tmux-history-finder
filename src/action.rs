@@ -96,7 +96,8 @@ fn jump(target: &ActionTarget<'_>) -> Result<()> {
     .context("failed to position near selected history line")?;
 
     let needle = trim_prefix_chars(target.text, 80);
-    if needle.is_empty() {
+    let search_text = needle.trim_start_matches('-');
+    if search_text.is_empty() {
         let raw = target.raw_line_no.to_string();
         tmux::run([
             "send-keys",
@@ -114,8 +115,7 @@ fn jump(target: &ActionTarget<'_>) -> Result<()> {
             target.pane_id,
             "-X",
             "search-forward-text",
-            "--",
-            needle.as_str(),
+            search_text,
         ])
         .context("failed to search for selected history text")?;
     }
