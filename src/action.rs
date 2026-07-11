@@ -114,6 +114,7 @@ fn jump(target: &ActionTarget<'_>) -> Result<()> {
             target.pane_id,
             "-X",
             "search-forward-text",
+            "--",
             needle.as_str(),
         ])
         .context("failed to search for selected history text")?;

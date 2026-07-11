@@ -73,7 +73,7 @@ assert_num_eq() {
 
 pane="$(tmux -L "$SOCKET" -f /dev/null new-session -d -x 50 -y 8 -s review \
     -P -F '#{pane_id}' \
-    "bash -lc 'for i in \$(seq 1 40); do if [ \"\$i\" = 5 ]; then echo DUPLICATE; else echo hist-\$i; fi; done; echo visible-a; echo DUPLICATE; echo visible-z; sleep 60'")"
+    "bash -lc 'for i in \$(seq 1 40); do case \"\$i\" in 5) echo DUPLICATE ;; 20) echo \"-rw-r--r-- query_test.go\" ;; *) echo hist-\$i ;; esac; done; echo visible-a; echo DUPLICATE; echo visible-z; sleep 60'")"
 wait_for_text "$pane" visible-z
 history_size="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{history_size}')"
 
@@ -84,6 +84,14 @@ assert_gt "$line_no" "$history_size" "visible line is outside scrollback"
 THF_TMUX_ARGS="-L $SOCKET" "$BIN" action --action jump --record "$record"
 scroll_position="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{scroll_position}')"
 assert_le "$scroll_position" 1 "jump scroll position"
+tmux -L "$SOCKET" send-keys -t "$pane" -X cancel
+
+full_capture="$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" capture --scope pane -t "$pane")"
+hyphen_record="$(printf '%s\n' "$full_capture" |
+    awk -F '\t' '$6 == "-rw-r--r-- query_test.go" { print; exit }')"
+THF_TMUX_ARGS="-L $SOCKET" "$BIN" action --action jump --record "$hyphen_record"
+cursor_line="$(tmux -L "$SOCKET" display-message -p -t "$pane" '#{copy_cursor_line}')"
+assert_eq "$cursor_line" "-rw-r--r-- query_test.go" "leading-hyphen jump target"
 tmux -L "$SOCKET" send-keys -t "$pane" -X cancel
 
 limited_capture="$(THF_TMUX_ARGS="-L $SOCKET" "$BIN" capture --scope pane \
