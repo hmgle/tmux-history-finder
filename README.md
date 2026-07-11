@@ -175,6 +175,8 @@ Supported values:
 | `motion_case` / `THF_MOTION_CASE`                               | `insensitive`                 | `smart`, `sensitive`, `insensitive`                     |
 | `motion_smartsign` / `THF_MOTION_SMARTSIGN`                     | `0`                           | `1` also matches shifted symbols such as `1` -> `!`     |
 | `motion_copy_mode_no_prefix` / `THF_MOTION_COPY_MODE_NO_PREFIX` | `0`                           | bind motion keys directly in copy-mode tables           |
+| `motion_vertical_border` / `THF_MOTION_VERTICAL_BORDER`         | `│`                           | vertical border used by the motion overlay               |
+| `motion_horizontal_border` / `THF_MOTION_HORIZONTAL_BORDER`     | `─`                           | horizontal border used by the motion overlay             |
 | `motion_hint1_fg` / `THF_MOTION_HINT1_FG`                       | `1;31`                        | SGR color for the first hint character                  |
 | `motion_hint2_fg` / `THF_MOTION_HINT2_FG`                       | `1;32`                        | SGR color for the second hint character                 |
 | `motion_dim` / `THF_MOTION_DIM`                                 | `2`                           | SGR color for dimmed pane borders                       |
@@ -206,10 +208,13 @@ picker would capture and index more scrollback than needed.
    record ID against the same snapshot.
 5. Actions call tmux directly to jump, copy, send, or print.
 
-Motion mode uses a separate visible-screen path. It captures only the panes in
-the current tmux window, searches their visible text, draws an ANSI hint overlay
-in a borderless tmux popup, then selects the target pane and moves the copy-mode
-cursor to the selected screen row and column.
+Motion mode uses a separate visible-screen path. It lists the panes in the
+current tmux window once, starts their independent `capture-pane` commands
+concurrently, and preserves pane order while collecting the results. It then
+searches the visible text and draws an ANSI hint overlay in a borderless tmux
+popup. Selecting a target sends the ordered window, pane, copy-mode, and cursor
+operations to tmux as one command sequence instead of starting a tmux process
+for every cursor step.
 
 ## Development
 

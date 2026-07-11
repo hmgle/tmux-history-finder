@@ -36,17 +36,27 @@ impl MotionSnapshot {
 }
 
 pub(super) fn init_panes(target_window: Option<&str>) -> Result<Vec<Pane>> {
-    let mut panes: Vec<Pane> = list_visible_panes(target_window)?
+    let client = tmux::TmuxClient::from_env()?;
+    init_panes_with_client(&client, target_window)
+}
+
+pub(super) fn init_panes_with_client(
+    client: &tmux::TmuxClient,
+    target_window: Option<&str>,
+) -> Result<Vec<Pane>> {
+    let mut panes: Vec<Pane> = list_visible_panes(client, target_window)?
         .into_iter()
         .filter(|pane| pane.height > 0 && pane.width > 0)
         .collect();
-    for pane in &mut panes {
-        pane.lines = capture_visible_pane(pane)?;
+    let commands = panes.iter().map(capture_visible_args).collect();
+    let outputs = client.stdout_many(commands)?;
+    for (pane, output) in panes.iter_mut().zip(outputs) {
+        pane.lines = parse_visible_capture(&output, pane.height);
     }
     Ok(panes)
 }
 
-fn list_visible_panes(target_window: Option<&str>) -> Result<Vec<Pane>> {
+fn list_visible_panes(client: &tmux::TmuxClient, target_window: Option<&str>) -> Result<Vec<Pane>> {
     let fmt = [
         "#{window_id}",
         "#{pane_id}",
@@ -69,7 +79,7 @@ fn list_visible_panes(target_window: Option<&str>) -> Result<Vec<Pane>> {
         args.push("-t".into());
         args.push(target_window.into());
     }
-    let output = tmux::stdout(args)?;
+    let output = client.stdout(args)?;
     let zoomed = window_zoomed(&output);
     let panes = output
         .lines()
@@ -128,7 +138,7 @@ fn window_zoomed(output: &str) -> bool {
         .any(|zoomed| zoomed == "1")
 }
 
-fn capture_visible_pane(pane: &Pane) -> Result<Vec<String>> {
+fn capture_visible_args(pane: &Pane) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["capture-pane".into(), "-p".into()];
 
     if pane.scroll_position > 0 {
@@ -141,14 +151,16 @@ fn capture_visible_pane(pane: &Pane) -> Result<Vec<String>> {
     }
     args.push("-t".into());
     args.push(pane.pane_id.clone().into());
+    args
+}
 
-    let output = tmux::stdout(args)?;
-    let output = output.strip_suffix('\n').unwrap_or(&output);
-    Ok(output
+fn parse_visible_capture(output: &str, height: usize) -> Vec<String> {
+    let output = output.strip_suffix('\n').unwrap_or(output);
+    output
         .split('\n')
-        .take(pane.height)
+        .take(height)
         .map(ToOwned::to_owned)
-        .collect())
+        .collect()
 }
 
 pub(super) fn window_size(target_window: Option<&str>) -> Result<(usize, usize)> {

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Motion capture now starts visible-pane `capture-pane` processes concurrently
+  and retains their original pane ordering when collecting output.
+- Motion navigation now batches window selection, pane selection, copy-mode,
+  and cursor movement into one ordered tmux command sequence, reducing process
+  startup overhead for every jump.
+
+### Tests
+- Motion integration coverage now verifies that concurrent captures remain
+  associated with the correct pane.
+
 ## [0.6.2] - 2026-07-11
 
 ### Fixed

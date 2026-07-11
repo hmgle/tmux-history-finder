@@ -40,6 +40,9 @@ Items are ordered by user impact and intended commit sequence.
 - [x] Avoid duplicate capture/search work when motion opens its popup.
 - [x] Sort pane references rather than cloning pane contents.
 - [x] Batch ANSI screen writes once per refresh.
+- [x] Start visible motion pane captures concurrently without initializing a
+  per-invocation worker pool.
+- [x] Batch motion navigation into one ordered tmux command sequence.
 
 ## 4. Installer, shell, and terminal safety
 

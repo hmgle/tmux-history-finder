@@ -1,7 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     io::Write,
-    process::{Command, Output, Stdio},
+    process::{Child, Command, Output, Stdio},
 };
 
 use anyhow::{Context, Result};
@@ -51,6 +51,63 @@ impl TmuxClient {
             .with_context(|| format!("failed to execute tmux {}", display_args(&args)))
     }
 
+    /// Start independent tmux commands together, then return stdout in input order.
+    pub fn stdout_many(&self, commands: Vec<Vec<OsString>>) -> Result<Vec<String>> {
+        let mut children = Vec::with_capacity(commands.len());
+        for args in commands {
+            match self
+                .command()
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => children.push((args, child)),
+                Err(error) => {
+                    terminate_children(children);
+                    return Err(error).with_context(|| {
+                        format!("failed to execute tmux {}", display_args(&args))
+                    });
+                }
+            }
+        }
+
+        let mut outputs = Vec::with_capacity(children.len());
+        let mut first_error = None;
+        for (args, child) in children {
+            match child.wait_with_output() {
+                Ok(output) if output.status.success() => {
+                    outputs.push(String::from_utf8_lossy(&output.stdout).to_string());
+                }
+                Ok(output) => {
+                    if first_error.is_none() {
+                        first_error = Some(anyhow::anyhow!(
+                            "tmux {} failed: {}",
+                            display_args(&args),
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        ));
+                    }
+                    outputs.push(String::new());
+                }
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error =
+                            Some(anyhow::Error::new(error).context(format!(
+                                "failed to wait for tmux {}",
+                                display_args(&args)
+                            )));
+                    }
+                    outputs.push(String::new());
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(outputs)
+    }
+
     pub fn stdout<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
@@ -88,12 +145,34 @@ impl TmuxClient {
         Ok(())
     }
 
+    /// Run an ordered tmux command sequence through one client process.
+    pub fn run_commands(&self, commands: &[Vec<OsString>]) -> Result<()> {
+        let mut args = Vec::new();
+        for command in commands.iter().filter(|command| !command.is_empty()) {
+            if !args.is_empty() {
+                args.push(";".into());
+            }
+            args.extend(command.iter().cloned());
+        }
+        if args.is_empty() {
+            return Ok(());
+        }
+        self.run(args)
+    }
+
     pub fn run_ignore<I, S>(&self, args: I)
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
         let _ = self.output(args);
+    }
+}
+
+fn terminate_children(children: Vec<(Vec<OsString>, Child)>) {
+    for (_, mut child) in children {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 

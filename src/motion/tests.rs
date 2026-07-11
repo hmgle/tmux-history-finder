@@ -1,5 +1,5 @@
 use super::{
-    capture::MotionSnapshot,
+    capture::{init_panes_with_client, MotionSnapshot},
     hints::{assign_hints_by_distance, generate_hints, hint_positions},
     matching::{find_matches, smartsign_patterns},
     navigation::move_cursor_with_client,
@@ -511,6 +511,36 @@ fn popup_command_targets_originating_client() {
     assert!(shell_command.contains("--snapshot '/tmp/motion snapshot.json'"));
     assert!(shell_command.contains("--case sensitive"));
     assert!(shell_command.contains("--smartsign"));
+}
+
+#[test]
+fn captures_every_visible_pane_with_the_correct_output() {
+    let server = TestTmux::start("printf 'left_marker\\n'; sleep 60", 50, 12);
+    let pane2 = server.split_window("printf 'right_marker\\n'; sleep 60");
+    server.wait_for_lines(&server.pane_id, "left_marker");
+    server.wait_for_lines(&pane2, "right_marker");
+    let window_id = server.stdout(&[
+        "display-message",
+        "-p",
+        "-t",
+        server.pane_id.as_str(),
+        "#{window_id}",
+    ]);
+
+    let panes =
+        init_panes_with_client(&server.client(), Some(&window_id)).expect("capture visible panes");
+
+    assert_eq!(panes.len(), 2);
+    let left = panes
+        .iter()
+        .find(|pane| pane.pane_id == server.pane_id)
+        .expect("left pane capture");
+    let right = panes
+        .iter()
+        .find(|pane| pane.pane_id == pane2)
+        .expect("right pane capture");
+    assert!(left.lines.iter().any(|line| line.contains("left_marker")));
+    assert!(right.lines.iter().any(|line| line.contains("right_marker")));
 }
 
 #[test]
