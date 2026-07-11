@@ -7,11 +7,14 @@ source "$CURRENT_DIR/scripts/utils.sh"
 
 search_command="$(thf_shell_quote "$CURRENT_DIR/history_finder.sh") search"
 prompt_search_command="$search_command --query-option @tmux_history_finder_last_query_#{client_pid} --require-query"
+pane_search_command="$search_command --scope pane"
+pane_prompt_search_command="$pane_search_command --query-option @tmux_history_finder_last_query_#{client_pid} --require-query"
 motion_command="$(thf_shell_quote "$CURRENT_DIR/scripts/motion-s.sh") #{client_pid} #{window_id} #{q:client_name}"
 motion2_command="$(thf_shell_quote "$CURRENT_DIR/scripts/motion-s2.sh") #{client_pid} #{window_id} #{q:client_name}"
 
 launch_key=$(tmux show-option -gqv "@tmux_history_finder_launch_key" 2>/dev/null)
 launch_key="${launch_key:-g}"
+pane_key=$(tmux show-option -gqv "@tmux_history_finder_pane_key" 2>/dev/null)
 motion_key=$(tmux show-option -gqv "@tmux_history_finder_motion_key" 2>/dev/null)
 motion_key="${motion_key:-s}"
 motion2_key=$(tmux show-option -gqv "@tmux_history_finder_motion2_key" 2>/dev/null)
@@ -30,6 +33,19 @@ case "$prompt_query" in
         tmux bind-key "$launch_key" run-shell -b "$search_command"
         ;;
 esac
+
+if [ -n "$pane_key" ]; then
+    case "$prompt_query" in
+        1|true|yes|on)
+            tmux bind-key "$pane_key" command-prompt -F -p "pane history search:" -T search \
+                "set-option -gq @tmux_history_finder_last_query_#{client_pid} '%%%'" \
+                \; run-shell -b "$pane_prompt_search_command"
+            ;;
+        *)
+            tmux bind-key "$pane_key" run-shell -b "$pane_search_command"
+            ;;
+    esac
+fi
 
 if [ -n "$motion_key" ]; then
     tmux bind-key "$motion_key" run-shell "$motion_command"

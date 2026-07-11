@@ -136,6 +136,7 @@ Set options in tmux:
 
 ```tmux
 set -g @tmux_history_finder_launch_key "g"
+set -g @tmux_history_finder_pane_key "/"
 set -g @tmux_history_finder_default_action "jump"
 set -g @tmux_history_finder_scope "all"
 set -g @tmux_history_finder_prompt_query "0"
@@ -157,6 +158,7 @@ Supported values:
 | Option / env var                                                | Default                       | Values                                                  |
 | --------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------- |
 | `launch_key` / `THF_LAUNCH_KEY`                                 | `g`                           | tmux prefix binding                                     |
+| `pane_key`                                                      | empty                         | tmux prefix binding for current-pane search             |
 | `scope` / `THF_SCOPE`                                           | `all`                         | `all`, `session`, `pane`                                |
 | `include_history` / `THF_INCLUDE_HISTORY`                       | `1`                           | `1` or `0`                                              |
 | `history_lines` / `THF_HISTORY_LINES`                           | `0`                           | `0` for all history, or a positive line count           |
@@ -178,6 +180,10 @@ Supported values:
 | `motion_dim` / `THF_MOTION_DIM`                                 | `2`                           | SGR color for dimmed pane borders                       |
 
 CLI flags override configuration for that run.
+
+`pane_key` is disabled by default so the plugin does not replace tmux's existing
+binding. When enabled, the plugin resolves `history_finder.sh` relative to its
+own installation directory, so the binding does not depend on TPM's path.
 
 Motion hints use the configured characters as a prefix-free key set. When a
 common match produces more targets than one- or two-character hints can cover,
