@@ -3,12 +3,13 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs::File,
-    io::{ErrorKind, Write},
-    path::PathBuf,
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
@@ -17,6 +18,10 @@ use crate::{
     tmux,
     util::{shell_quote, version_at_least},
 };
+
+const COPYQ_MAX_ITEMS: usize = 1_000;
+const COPYQ_MAX_BYTES: usize = 64 * 1024 * 1024;
+const CLIPBOARD_PREVIEW_BYTES: usize = 1024 * 1024;
 
 const CATEGORIES: &[(&str, &str)] = &[
     ("history", "Search pane history"),
@@ -46,7 +51,11 @@ pub struct PreviewArgs {
     #[arg(long)]
     data: PathBuf,
     #[arg(long)]
-    row: usize,
+    row: Option<usize>,
+    #[arg(long)]
+    offset: Option<u64>,
+    #[arg(long)]
+    length: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +127,29 @@ struct PaneEntry {
 }
 
 #[derive(Clone, Debug)]
+struct ClipboardEntry {
+    source_index: usize,
+    summary: String,
+    offset: u64,
+    length: u64,
+}
+
+#[derive(Debug)]
+struct ClipboardSnapshot {
+    entries: Vec<ClipboardEntry>,
+    data: NamedTempFile,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PreviewSpec<'a> {
+    Rows(&'a str),
+    Blob {
+        path: &'a Path,
+        entries: &'a [ClipboardEntry],
+    },
+}
+
+#[derive(Clone, Debug)]
 struct ProcessRow {
     row: Row,
     user: String,
@@ -156,16 +188,24 @@ pub fn run(args: ManageArgs) -> Result<()> {
 }
 
 pub fn preview(args: PreviewArgs) -> Result<()> {
+    if args.kind == "blob" {
+        return print_blob_preview(
+            &args.data,
+            args.offset.context("blob preview requires --offset")?,
+            args.length.context("blob preview requires --length")?,
+        );
+    }
     let rows: Vec<Row> = serde_json::from_reader(
         File::open(&args.data)
             .with_context(|| format!("failed to open preview data {}", args.data.display()))?,
     )?;
-    let row = rows.get(args.row).context("preview row is out of range")?;
+    let row = rows
+        .get(args.row.context("row preview requires --row")?)
+        .context("preview row is out of range")?;
     match args.kind.as_str() {
         "session" => print_tmux(["capture-pane", "-ep", "-t", &format!("{}:", row.id)]),
         "window" | "pane" => print_tmux(["capture-pane", "-ep", "-t", row.id.as_str()]),
         "buffer" => print_tmux(["show-buffer", "-b", row.id.as_str()]),
-        "copyq" => print_command("copyq", ["read", row.id.as_str()]),
         _ => Ok(()),
     }
 }
@@ -888,38 +928,49 @@ fn execute_binding(line: &str) -> Result<()> {
 
 fn run_clipboard(action: Option<&str>, context: &ManagerContext) -> Result<()> {
     let mut use_copyq = action != Some("buffer") && tmux::have("copyq");
-    if use_copyq && copyq_count().is_err() {
-        let _ = Command::new("copyq")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        if copyq_count().is_err() {
-            if action == Some("system") {
-                anyhow::bail!("CopyQ is installed but its clipboard service is unavailable");
+    let mut snapshot = None;
+    if use_copyq {
+        match load_copyq_snapshot() {
+            Ok(loaded) => snapshot = Some(loaded),
+            Err(_) => {
+                let _ = Command::new("copyq")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                match load_copyq_snapshot() {
+                    Ok(loaded) => snapshot = Some(loaded),
+                    Err(error) if action == Some("system") => {
+                        return Err(error).context(
+                            "CopyQ is installed but its clipboard service or snapshot is unavailable",
+                        );
+                    }
+                    Err(_) => use_copyq = false,
+                }
             }
-            use_copyq = false;
         }
     }
     if use_copyq {
-        let count = copyq_count()?;
-        let mut rows = Vec::new();
-        for index in 0..count {
-            let id = index.to_string();
-            let content = command_stdout("copyq", ["read", id.as_str()])?;
-            rows.push(Row::new(&id, one_line(&content)));
-        }
-        let selected = selected_rows(
+        let mut snapshot = snapshot.context("CopyQ snapshot is unavailable")?;
+        let rows: Vec<Row> = snapshot
+            .entries
+            .iter()
+            .map(|entry| Row::new(entry.source_index.to_string(), &entry.summary))
+            .collect();
+        let selected = choose_with_preview(
             &rows,
             context,
             "clipboard> ",
             "TAB selects multiple clipboard entries",
             true,
-            Some("copyq"),
+            Some(PreviewSpec::Blob {
+                path: snapshot.data.path(),
+                entries: &snapshot.entries,
+            }),
         )?;
-        for row in selected {
-            let content = command_stdout_bytes("copyq", ["read", row.id.as_str()])?;
+        if !selected.is_empty() {
+            let content = read_clipboard_entries(&mut snapshot, &selected)?;
             paste_bytes(context, &content)?;
         }
     } else {
@@ -950,27 +1001,131 @@ fn run_clipboard(action: Option<&str>, context: &ManagerContext) -> Result<()> {
             true,
             Some("buffer"),
         )?;
-        for row in selected {
-            tmux::run(["paste-buffer", "-b", row.id.as_str()])?;
+        let commands = selected
+            .iter()
+            .map(|row| command(["paste-buffer", "-b", row.id.as_str()]))
+            .collect::<Vec<_>>();
+        if !commands.is_empty() {
+            context.tmux.run_commands(&commands)?;
         }
     }
     Ok(())
 }
 
-fn copyq_count() -> Result<usize> {
-    command_stdout("copyq", ["count"])?
-        .trim()
-        .parse()
-        .context("CopyQ returned an invalid item count")
+fn load_copyq_snapshot() -> Result<ClipboardSnapshot> {
+    let script = format!(
+        "var limit = Math.min(size(), {COPYQ_MAX_ITEMS}); \
+         for (var i = 0; i < limit; ++i) {{ \
+         print(i + '\\t' + toBase64(read(i)) + '\\n'); }}"
+    );
+    let output = command_stdout_bytes("copyq", ["eval", "--", script.as_str()])?;
+    parse_copyq_snapshot(&output)
+}
+
+fn parse_copyq_snapshot(output: &[u8]) -> Result<ClipboardSnapshot> {
+    let encoded = std::str::from_utf8(output).context("CopyQ snapshot is not UTF-8 base64 data")?;
+    let mut data = NamedTempFile::new()?;
+    let mut entries = Vec::new();
+    let mut offset = 0_u64;
+    for line in encoded.lines() {
+        let (source_index, encoded_content) = line
+            .split_once('\t')
+            .context("CopyQ snapshot record is missing its delimiter")?;
+        let source_index = source_index
+            .parse()
+            .context("CopyQ snapshot contains an invalid source index")?;
+        let content = BASE64
+            .decode(encoded_content)
+            .context("CopyQ snapshot contains invalid base64 content")?;
+        let next_size = usize::try_from(offset)
+            .ok()
+            .and_then(|size| size.checked_add(content.len()))
+            .context("CopyQ snapshot size overflow")?;
+        if next_size > COPYQ_MAX_BYTES {
+            anyhow::bail!(
+                "CopyQ snapshot exceeds the {} MiB safety limit",
+                COPYQ_MAX_BYTES / 1024 / 1024
+            );
+        }
+        data.write_all(&content)?;
+        entries.push(ClipboardEntry {
+            source_index,
+            summary: clipboard_summary(&content),
+            offset,
+            length: content.len() as u64,
+        });
+        offset = offset
+            .checked_add(content.len() as u64)
+            .context("CopyQ snapshot offset overflow")?;
+    }
+    data.flush()?;
+    Ok(ClipboardSnapshot { entries, data })
+}
+
+fn clipboard_summary(content: &[u8]) -> String {
+    let text = String::from_utf8_lossy(content);
+    let preview = sanitize_preview_text(&text.chars().take(512).collect::<String>());
+    let summary = one_line(&preview);
+    if summary.is_empty() {
+        "[empty]".into()
+    } else {
+        summary
+    }
+}
+
+fn read_clipboard_entries(snapshot: &mut ClipboardSnapshot, indexes: &[usize]) -> Result<Vec<u8>> {
+    let total = indexes.iter().try_fold(0_usize, |total, index| {
+        let length = usize::try_from(
+            snapshot
+                .entries
+                .get(*index)
+                .context("clipboard selection is out of range")?
+                .length,
+        )
+        .context("clipboard entry is too large")?;
+        total
+            .checked_add(length)
+            .context("clipboard paste is too large")
+    })?;
+    let mut result = Vec::with_capacity(total);
+    for index in indexes {
+        let entry = snapshot
+            .entries
+            .get(*index)
+            .context("clipboard selection is out of range")?;
+        snapshot
+            .data
+            .as_file_mut()
+            .seek(SeekFrom::Start(entry.offset))?;
+        let start = result.len();
+        result.resize(start + entry.length as usize, 0);
+        snapshot
+            .data
+            .as_file_mut()
+            .read_exact(&mut result[start..])?;
+    }
+    Ok(result)
 }
 
 fn paste_bytes(context: &ManagerContext, content: &[u8]) -> Result<()> {
     let name = format!("tnx-{}", std::process::id());
-    let client = &context.tmux;
-    client.run_with_input(["load-buffer", "-b", name.as_str(), "-"], content)?;
-    let result = client.run(["paste-buffer", "-b", name.as_str()]);
-    client.run_ignore(["delete-buffer", "-b", name.as_str()]);
-    result
+    context.tmux.run_with_input(
+        [
+            "load-buffer",
+            "-b",
+            name.as_str(),
+            "-",
+            ";",
+            "paste-buffer",
+            "-b",
+            name.as_str(),
+            ";",
+            "delete-buffer",
+            "-b",
+            name.as_str(),
+        ],
+        content,
+    )
 }
 
 fn run_process(action: Option<&str>, context: &ManagerContext) -> Result<()> {
@@ -1348,22 +1503,47 @@ fn choose(
     multi: bool,
     preview_kind: Option<&str>,
 ) -> Result<Vec<usize>> {
+    choose_with_preview(
+        rows,
+        context,
+        prompt,
+        header,
+        multi,
+        preview_kind.map(PreviewSpec::Rows),
+    )
+}
+
+fn choose_with_preview(
+    rows: &[Row],
+    context: &ManagerContext,
+    prompt: &str,
+    header: &str,
+    multi: bool,
+    preview_spec: Option<PreviewSpec<'_>>,
+) -> Result<Vec<usize>> {
     if rows.is_empty() {
         tmux::display_message("tmux-nexus: no manager items available");
         return Ok(Vec::new());
     }
     let config = &context.config;
-    let mut data = preview_kind.map(|_| NamedTempFile::new()).transpose()?;
+    let mut data = matches!(preview_spec, Some(PreviewSpec::Rows(_)))
+        .then(NamedTempFile::new)
+        .transpose()?;
     if let Some(data) = data.as_mut() {
         serde_json::to_writer(&mut *data, rows)?;
         data.flush()?;
     }
     let mut command = context.picker.command();
+    let with_nth = if matches!(preview_spec, Some(PreviewSpec::Blob { .. })) {
+        "4.."
+    } else {
+        "2.."
+    };
     command.args([
         "--delimiter",
         "\t",
         "--with-nth",
-        "2..",
+        with_nth,
         "--layout=reverse",
         "--info=inline",
         "--tiebreak=index",
@@ -1373,17 +1553,26 @@ fn choose(
         header,
     ]);
     command.arg(if multi { "-m" } else { "+m" });
-    if let Some(kind) = preview_kind {
+    if let Some(preview_spec) = preview_spec {
         let exe = env::current_exe()?;
-        let data = data
-            .as_ref()
-            .context("manager preview data is unavailable")?;
-        let preview = format!(
-            "{} manage-preview --kind {} --data {} --row {{1}}",
-            shell_quote(&exe.to_string_lossy()),
-            shell_quote(kind),
-            shell_quote(&data.path().to_string_lossy())
-        );
+        let preview = match preview_spec {
+            PreviewSpec::Rows(kind) => {
+                let data = data
+                    .as_ref()
+                    .context("manager preview data is unavailable")?;
+                format!(
+                    "{} manage-preview --kind {} --data {} --row {{1}}",
+                    shell_quote(&exe.to_string_lossy()),
+                    shell_quote(kind),
+                    shell_quote(&data.path().to_string_lossy())
+                )
+            }
+            PreviewSpec::Blob { path, .. } => format!(
+                "{} manage-preview --kind blob --data {} --offset {{2}} --length {{3}}",
+                shell_quote(&exe.to_string_lossy()),
+                shell_quote(&path.to_string_lossy())
+            ),
+        };
         let follow = if context.picker.preview_follow {
             ":follow"
         } else {
@@ -1401,7 +1590,23 @@ fn choose(
     let mut child = command.spawn().context("failed to start manager fzf")?;
     if let Some(stdin) = child.stdin.as_mut() {
         for (index, row) in rows.iter().enumerate() {
-            if let Err(error) = writeln!(stdin, "{}\t{}", index, sanitize(&row.display)) {
+            let result = match preview_spec {
+                Some(PreviewSpec::Blob { entries, .. }) => {
+                    let entry = entries
+                        .get(index)
+                        .context("clipboard preview entry is out of range")?;
+                    writeln!(
+                        stdin,
+                        "{}\t{}\t{}\t{}",
+                        index,
+                        entry.offset,
+                        entry.length,
+                        sanitize(&row.display)
+                    )
+                }
+                _ => writeln!(stdin, "{}\t{}", index, sanitize(&row.display)),
+            };
+            if let Err(error) = result {
                 if error.kind() != ErrorKind::BrokenPipe {
                     return Err(error.into());
                 }
@@ -1646,21 +1851,64 @@ fn one_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn print_blob_preview(path: &Path, offset: u64, length: u64) -> Result<()> {
+    let mut file = File::open(path)
+        .with_context(|| format!("failed to open preview data {}", path.display()))?;
+    let file_size = file.metadata()?.len();
+    let end = offset
+        .checked_add(length)
+        .context("preview byte range overflow")?;
+    if end > file_size {
+        anyhow::bail!("preview byte range is outside the snapshot");
+    }
+    let preview_length = length.min(CLIPBOARD_PREVIEW_BYTES as u64) as usize;
+    let mut content = vec![0; preview_length];
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(&mut content)?;
+    match std::str::from_utf8(&content) {
+        Ok(text) => print!("{}", sanitize_preview_text(text)),
+        Err(_) => {
+            println!("[binary clipboard entry: {length} bytes]");
+            print_hex_preview(&content[..content.len().min(4096)]);
+        }
+    }
+    if length > preview_length as u64 {
+        println!(
+            "\n[preview truncated at {} KiB of {} KiB]",
+            preview_length / 1024,
+            length.div_ceil(1024)
+        );
+    }
+    Ok(())
+}
+
+fn sanitize_preview_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '\n' | '\t' => character,
+            _ if character.is_control() => '�',
+            _ => character,
+        })
+        .collect()
+}
+
+fn print_hex_preview(content: &[u8]) {
+    for (offset, chunk) in content.chunks(16).enumerate() {
+        print!("{:08x}  ", offset * 16);
+        for byte in chunk {
+            print!("{byte:02x} ");
+        }
+        println!();
+    }
+}
+
 fn print_tmux<I, S>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
     print!("{}", tmux::stdout(args)?);
-    Ok(())
-}
-
-fn print_command<I, S>(program: &str, args: I) -> Result<()>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    print!("{}", command_stdout(program, args)?);
     Ok(())
 }
 
@@ -1705,8 +1953,9 @@ fn ensure_program(program: &str, message: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bool, parse_menu, parse_pane_entry, parse_session_entry, parse_window_entry,
-        picker_exit, without_multi, without_popup_options, without_tmux_options, PickerExit,
+        parse_bool, parse_copyq_snapshot, parse_menu, parse_pane_entry, parse_session_entry,
+        parse_window_entry, picker_exit, read_clipboard_entries, sanitize_preview_text,
+        without_multi, without_popup_options, without_tmux_options, PickerExit,
     };
 
     #[test]
@@ -1800,5 +2049,26 @@ mod tests {
         assert_eq!(pane.window_id, "@2");
         assert_eq!(pane.pane_id, "%3");
         assert_eq!(pane.row.display, "work:1.0\ttitle");
+    }
+
+    #[test]
+    fn copyq_snapshot_preserves_empty_multiline_and_binary_entries() {
+        let mut snapshot = parse_copyq_snapshot(b"0\taGVsbG8Kd29ybGQ=\n1\t\n2\tAP+A\n").unwrap();
+        assert_eq!(snapshot.entries.len(), 3);
+        assert_eq!(snapshot.entries[0].summary, "hello world");
+        assert_eq!(snapshot.entries[1].summary, "[empty]");
+        assert_eq!(snapshot.entries[2].summary, "���");
+        assert_eq!(
+            read_clipboard_entries(&mut snapshot, &[2, 0]).unwrap(),
+            b"\0\xff\x80hello\nworld"
+        );
+    }
+
+    #[test]
+    fn clipboard_preview_removes_terminal_control_sequences() {
+        assert_eq!(
+            sanitize_preview_text("safe\n\x1b[31mred\t\x07"),
+            "safe\n�[31mred\t�"
+        );
     }
 }

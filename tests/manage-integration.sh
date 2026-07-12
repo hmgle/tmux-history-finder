@@ -36,6 +36,19 @@ esac
 EOF
 chmod +x "$TMP/bin/fzf"
 
+cat > "$TMP/bin/copyq" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$TNX_TEST_COPYQ_LOG"
+if [ "${1:-}" = eval ]; then
+    printf '0\tY29weXEtbGluZS1vbmUKY29weXEtbGluZS10d28=\n'
+    printf '1\t\n'
+    exit 0
+fi
+exit 2
+EOF
+chmod +x "$TMP/bin/copyq"
+
 pane_one="$(tmux -L "$SOCKET" -f /dev/null new-session -d -s manager -P -F '#{pane_id}' \
     "bash -lc 'printf ready-one; sleep 60'")"
 pane_two="$(tmux -L "$SOCKET" split-window -d -t "$pane_one" -P -F '#{pane_id}' \
@@ -44,6 +57,7 @@ pane_two="$(tmux -L "$SOCKET" split-window -d -t "$pane_one" -P -F '#{pane_id}' 
 run_manage() {
     PATH="$TMP/bin:$PATH" \
         TNX_TMUX_ARGS="-L $SOCKET" \
+        TNX_TEST_COPYQ_LOG="$TMP/copyq.log" \
         TNX_MANAGER_FZF_OPTIONS="" \
         TNX_MANAGER_CONFIRM=0 \
         "$BIN" manage "$@"
@@ -61,6 +75,11 @@ tmux -L "$SOCKET" set-buffer -b manager-test 'manager-clipboard'
 TNX_TEST_MATCH="manager-clipboard" run_manage clipboard buffer
 sleep 0.1
 tmux -L "$SOCKET" capture-pane -p -t "$pane_two" | grep -Fq manager-clipboard
+
+TNX_TEST_MATCH="copyq-line-one copyq-line-two" run_manage clipboard system
+sleep 0.1
+tmux -L "$SOCKET" capture-pane -p -t "$pane_two" | grep -Fq copyq-line-one
+[ "$(wc -l < "$TMP/copyq.log")" -eq 1 ]
 
 tmux -L "$SOCKET" bind-key -T prefix C-g set-option -g @manager_binding_ran yes
 TNX_TEST_MATCH="@manager_binding_ran" run_manage keybinding

@@ -151,6 +151,11 @@ default. TAB selects multiple targets for detach, kill, join, clipboard paste,
 and process signals. Object actions use hidden tmux IDs, so custom formats may
 contain spaces, colons, quotes, and duplicate display text safely.
 
+CopyQ history is loaded as one binary-safe snapshot so the displayed,
+previewed, and pasted content cannot drift when clipboard history changes.
+The snapshot is limited to the newest 1,000 entries and 64 MiB in total;
+individual previews are limited to 1 MiB.
+
 ## Configuration
 
 Set options in tmux:
