@@ -77,10 +77,10 @@ fi
 tmux -L "$SOCKET" new-window -d -t manager -n old-manager-window 'sleep 60'
 TNX_TEST_MATCH="old-manager-window" TNX_TEST_QUERY="renamed-manager-window" \
     run_manage window rename
-[ "$(tmux -L "$SOCKET" list-windows -t manager -F '#{window_name}' | rg -c '^renamed-manager-window$')" = 1 ]
+[ "$(tmux -L "$SOCKET" list-windows -t manager -F '#{window_name}' | grep -c '^renamed-manager-window$')" = 1 ]
 TNX_TEST_MATCH="renamed-manager-window" run_manage window kill
 if tmux -L "$SOCKET" list-windows -t manager -F '#{window_name}' | \
-    rg -q '^renamed-manager-window$'; then
+    grep -q '^renamed-manager-window$'; then
     echo "manager integration: window kill left the selected window alive" >&2
     exit 1
 fi
@@ -93,12 +93,12 @@ linked_index="$(tmux -L "$SOCKET" display-message -p \
     -t "manager:$linked_window" '#{window_index}')"
 TNX_TEST_MATCH="manager:$linked_index: linked-manager-window" run_manage window kill
 if tmux -L "$SOCKET" list-windows -t manager -F '#{window_name}' | \
-    rg -q '^linked-manager-window$'; then
+    grep -q '^linked-manager-window$'; then
     echo "manager integration: selected window link was not removed" >&2
     exit 1
 fi
 if ! tmux -L "$SOCKET" list-windows -t linked-other -F '#{window_name}' | \
-    rg -q '^linked-manager-window$'; then
+    grep -q '^linked-manager-window$'; then
     echo "manager integration: window kill removed the wrong linked window" >&2
     exit 1
 fi
