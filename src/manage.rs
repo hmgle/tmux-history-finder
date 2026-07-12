@@ -3,13 +3,12 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs::File,
-    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
@@ -19,9 +18,9 @@ use crate::{
     util::{shell_quote, version_at_least},
 };
 
-const COPYQ_MAX_ITEMS: usize = 1_000;
-const COPYQ_MAX_BYTES: usize = 64 * 1024 * 1024;
-const CLIPBOARD_PREVIEW_BYTES: usize = 1024 * 1024;
+mod clipboard;
+mod process;
+mod workspace;
 
 const CATEGORIES: &[(&str, &str)] = &[
     ("history", "Search pane history"),
@@ -126,41 +125,13 @@ struct PaneEntry {
     pane_id: String,
 }
 
-#[derive(Clone, Debug)]
-struct ClipboardEntry {
-    source_index: usize,
-    summary: String,
-    offset: u64,
-    length: u64,
-}
-
-#[derive(Debug)]
-struct ClipboardSnapshot {
-    entries: Vec<ClipboardEntry>,
-    data: NamedTempFile,
-}
-
 #[derive(Clone, Copy, Debug)]
 enum PreviewSpec<'a> {
     Rows(&'a str),
     Blob {
         path: &'a Path,
-        entries: &'a [ClipboardEntry],
+        entries: &'a [(u64, u64)],
     },
-}
-
-#[derive(Clone, Debug)]
-struct ProcessEntry {
-    row: Row,
-    uid: u32,
-    pid: u32,
-    started: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ProcessIdentity {
-    uid: u32,
-    started: String,
 }
 
 pub fn run(args: ManageArgs) -> Result<()> {
@@ -182,13 +153,13 @@ pub fn run(args: ManageArgs) -> Result<()> {
     match category.as_str() {
         "history" => run_history(),
         "copy-mode" => run_copy_mode(args.action.as_deref(), &context),
-        "session" => run_session(args.action.as_deref(), &context),
-        "window" => run_window(args.action.as_deref(), &context),
-        "pane" => run_pane(args.action.as_deref(), &context),
+        "session" => workspace::run_session(args.action.as_deref(), &context),
+        "window" => workspace::run_window(args.action.as_deref(), &context),
+        "pane" => workspace::run_pane(args.action.as_deref(), &context),
         "command" => run_command(&context),
         "keybinding" => run_keybinding(&context),
-        "clipboard" => run_clipboard(args.action.as_deref(), &context),
-        "process" => run_process(args.action.as_deref(), &context),
+        "clipboard" => clipboard::run(args.action.as_deref(), &context),
+        "process" => process::run(args.action.as_deref(), &context),
         "menu" => run_menu(&context),
         other => anyhow::bail!("unknown manager category '{other}'"),
     }
@@ -196,7 +167,7 @@ pub fn run(args: ManageArgs) -> Result<()> {
 
 pub fn preview(args: PreviewArgs) -> Result<()> {
     if args.kind == "blob" {
-        return print_blob_preview(
+        return clipboard::print_blob_preview(
             &args.data,
             args.offset.context("blob preview requires --offset")?,
             args.length.context("blob preview requires --length")?,
@@ -394,379 +365,6 @@ fn run_history() -> Result<()> {
     }
 }
 
-fn run_session(action: Option<&str>, context: &ManagerContext) -> Result<()> {
-    let config = &context.config;
-    let actions = ["switch", "new", "rename", "detach", "kill"];
-    let action = resolve_action(action, &actions, context, "session action> ")?;
-    if action.is_empty() {
-        return Ok(());
-    }
-    if action == "new" {
-        if let Some(name) = prompt_text(context, "new session> ", "Enter a new session name")? {
-            let mut commands = vec![command(["new-session", "-d", "-s", name.as_str()])];
-            commands.extend(client_switch_commands(&name));
-            context.tmux.run_commands(&commands)?;
-        }
-        return Ok(());
-    }
-    let mut sessions = session_entries(config)?;
-    let current = tmux::try_stdout(["display-message", "-p", "#{session_id}"]).unwrap_or_default();
-    if action == "switch" && !config.switch_current {
-        sessions.retain(|session| session.row.id != current);
-    }
-    if action == "detach" {
-        sessions.retain(|session| session.attached_clients > 0);
-    }
-    let rows: Vec<Row> = sessions.iter().map(|session| session.row.clone()).collect();
-    let multi = matches!(action.as_str(), "detach" | "kill");
-    let indexes = choose(
-        &rows,
-        context,
-        "session> ",
-        if multi {
-            "TAB selects multiple sessions"
-        } else {
-            "Select a session"
-        },
-        multi,
-        Some("session"),
-    )?;
-    if indexes.is_empty() {
-        return Ok(());
-    }
-    let selected: Vec<&SessionEntry> = indexes.iter().map(|index| &sessions[*index]).collect();
-    let client = &context.tmux;
-    match action.as_str() {
-        "switch" => {
-            let commands = client_switch_commands(&selected[0].row.id);
-            if commands.is_empty() {
-                Ok(())
-            } else {
-                client.run_commands(&commands)
-            }
-        }
-        "rename" => {
-            if let Some(name) = prompt_text(context, "rename session> ", "Enter a new name")? {
-                client.run([
-                    "rename-session",
-                    "-t",
-                    selected[0].row.id.as_str(),
-                    name.as_str(),
-                ])?;
-            }
-            Ok(())
-        }
-        "detach" => destructive_tmux(
-            context,
-            "Detach selected session client(s)?",
-            selected
-                .iter()
-                .map(|session| command(["detach-client", "-s", session.row.id.as_str()]))
-                .collect(),
-        ),
-        "kill" => destructive_tmux(
-            context,
-            "Kill selected session(s)?",
-            selected
-                .iter()
-                .map(|session| command(["kill-session", "-t", session.row.id.as_str()]))
-                .collect(),
-        ),
-        _ => unreachable!(),
-    }
-}
-
-fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
-    let config = &context.config;
-    let actions = ["switch", "link", "move", "swap", "rename", "kill"];
-    let action = resolve_action(action, &actions, context, "window action> ")?;
-    if action.is_empty() {
-        return Ok(());
-    }
-    let mut windows = window_entries(config)?;
-    let current = context
-        .tmux
-        .stdout(["display-message", "-p", "#{session_id}\t#{window_id}"])?;
-    let (current_session, current_window) = current
-        .trim_end()
-        .split_once('\t')
-        .context("tmux returned invalid current window identifiers")?;
-    if matches!(action.as_str(), "link" | "move") {
-        windows.retain(|window| window.session_id != current_session);
-        let rows: Vec<Row> = windows.iter().map(|window| window.row.clone()).collect();
-        let indexes = choose(
-            &rows,
-            context,
-            "source window> ",
-            "Select a source window",
-            false,
-            Some("window"),
-        )?;
-        if let Some(index) = indexes.first() {
-            let window = &windows[*index];
-            let command_name = if action == "link" {
-                "link-window"
-            } else {
-                "move-window"
-            };
-            tmux::run([
-                command_name,
-                "-a",
-                "-s",
-                window.row.id.as_str(),
-                "-t",
-                current_session,
-            ])?;
-        }
-        return Ok(());
-    }
-    if action == "switch" && !config.switch_current {
-        windows.retain(|window| {
-            window.session_id != current_session || window.window_id != current_window
-        });
-    }
-    let rows: Vec<Row> = windows.iter().map(|window| window.row.clone()).collect();
-    let indexes = choose(
-        &rows,
-        context,
-        "window> ",
-        if action == "kill" {
-            "TAB selects multiple windows"
-        } else {
-            "Select a window"
-        },
-        action == "kill",
-        Some("window"),
-    )?;
-    if indexes.is_empty() {
-        return Ok(());
-    }
-    let selected: Vec<&WindowEntry> = indexes.iter().map(|index| &windows[*index]).collect();
-    let client = &context.tmux;
-    match action.as_str() {
-        "switch" => {
-            let mut commands = client_switch_commands(&selected[0].session_id);
-            commands.push(command([
-                "select-window",
-                "-t",
-                selected[0].row.id.as_str(),
-            ]));
-            client.run_commands(&commands)
-        }
-        "rename" => {
-            if let Some(name) = prompt_text(context, "rename window> ", "Enter a new name")? {
-                client.run([
-                    "rename-window",
-                    "-t",
-                    selected[0].row.id.as_str(),
-                    name.as_str(),
-                ])?;
-            }
-            Ok(())
-        }
-        "swap" => {
-            let source = selected[0].row.id.clone();
-            let source_window = selected[0].window_id.clone();
-            drop(selected);
-            windows.retain(|window| window.window_id != source_window);
-            let rows: Vec<Row> = windows.iter().map(|window| window.row.clone()).collect();
-            let other = choose(
-                &rows,
-                context,
-                "swap with> ",
-                "Select another window",
-                false,
-                Some("window"),
-            )?;
-            if let Some(index) = other.first() {
-                client.run([
-                    "swap-window",
-                    "-s",
-                    source.as_str(),
-                    "-t",
-                    windows[*index].row.id.as_str(),
-                ])?;
-            }
-            Ok(())
-        }
-        "kill" => destructive_tmux(
-            context,
-            "Unlink/kill selected window(s)?",
-            selected
-                .iter()
-                .map(|window| command(["unlink-window", "-k", "-t", window.row.id.as_str()]))
-                .collect(),
-        ),
-        _ => unreachable!(),
-    }
-}
-
-fn run_pane(action: Option<&str>, context: &ManagerContext) -> Result<()> {
-    let config = &context.config;
-    let actions = [
-        "switch", "break", "join", "swap", "layout", "kill", "resize",
-    ];
-    let action = resolve_action(action, &actions, context, "pane action> ")?;
-    if action.is_empty() {
-        return Ok(());
-    }
-    if action == "layout" {
-        let layouts = rows(&[
-            "even-horizontal",
-            "even-vertical",
-            "main-horizontal",
-            "main-vertical",
-            "tiled",
-        ]);
-        if let Some(layout) = selected_rows(
-            &layouts,
-            context,
-            "layout> ",
-            "Select a layout",
-            false,
-            None,
-        )?
-        .first()
-        {
-            tmux::run(["select-layout", layout.id.as_str()])?;
-        }
-        return Ok(());
-    }
-    if action == "resize" {
-        return resize_pane(context);
-    }
-    let mut panes = pane_entries(config)?;
-    let current = context
-        .tmux
-        .stdout(["display-message", "-p", "#{session_id}\t#{pane_id}"])?;
-    let (current_session, current_pane) = current
-        .trim_end()
-        .split_once('\t')
-        .context("tmux returned invalid current pane identifiers")?;
-    if action == "join" || (action == "switch" && !config.switch_current) {
-        panes.retain(|pane| pane.pane_id != current_pane);
-    }
-    let rows: Vec<Row> = panes.iter().map(|pane| pane.row.clone()).collect();
-    let multi = matches!(action.as_str(), "join" | "kill");
-    let indexes = choose(
-        &rows,
-        context,
-        "pane> ",
-        if multi {
-            "TAB selects multiple panes"
-        } else {
-            "Select a pane"
-        },
-        multi,
-        Some("pane"),
-    )?;
-    if indexes.is_empty() {
-        return Ok(());
-    }
-    let selected: Vec<&PaneEntry> = indexes.iter().map(|index| &panes[*index]).collect();
-    let client = &context.tmux;
-    match action.as_str() {
-        "switch" => {
-            let mut commands = client_switch_commands(&selected[0].session_id);
-            commands.push(command([
-                "select-window",
-                "-t",
-                selected[0].window_id.as_str(),
-            ]));
-            commands.push(command(["select-pane", "-t", selected[0].pane_id.as_str()]));
-            client.run_commands(&commands)
-        }
-        "break" => client.run([
-            "break-pane",
-            "-d",
-            "-s",
-            selected[0].pane_id.as_str(),
-            "-t",
-            &format!("{current_session}:"),
-        ]),
-        "join" => {
-            let commands = selected
-                .iter()
-                .map(|pane| command(["move-pane", "-s", pane.pane_id.as_str(), "-t", current_pane]))
-                .collect::<Vec<_>>();
-            client.run_commands(&commands)
-        }
-        "swap" => {
-            let source = selected[0].pane_id.clone();
-            drop(selected);
-            panes.retain(|pane| pane.pane_id != source);
-            let rows: Vec<Row> = panes.iter().map(|pane| pane.row.clone()).collect();
-            let other = choose(
-                &rows,
-                context,
-                "swap with> ",
-                "Select another pane",
-                false,
-                Some("pane"),
-            )?;
-            if let Some(index) = other.first() {
-                client.run([
-                    "swap-pane",
-                    "-s",
-                    source.as_str(),
-                    "-t",
-                    panes[*index].pane_id.as_str(),
-                ])?;
-            }
-            Ok(())
-        }
-        "kill" => destructive_tmux(
-            context,
-            "Kill selected pane(s)?",
-            selected
-                .iter()
-                .map(|pane| command(["kill-pane", "-t", pane.pane_id.as_str()]))
-                .collect(),
-        ),
-        _ => unreachable!(),
-    }
-}
-
-fn resize_pane(context: &ManagerContext) -> Result<()> {
-    let directions = rows(&["left", "right", "up", "down"]);
-    let Some(direction) = selected_rows(
-        &directions,
-        context,
-        "resize> ",
-        "Select a direction",
-        false,
-        None,
-    )?
-    .first()
-    .cloned() else {
-        return Ok(());
-    };
-    let sizes = if matches!(direction.id.as_str(), "left" | "right") {
-        rows(&["1", "2", "3", "5", "10", "20", "30"])
-    } else {
-        rows(&["1", "2", "3", "5", "10", "15", "20"])
-    };
-    let Some(size) = selected_rows(
-        &sizes,
-        context,
-        "size> ",
-        "Select cells to adjust",
-        false,
-        None,
-    )?
-    .first()
-    .cloned() else {
-        return Ok(());
-    };
-    let flag = match direction.id.as_str() {
-        "left" => "-L",
-        "right" => "-R",
-        "up" => "-U",
-        _ => "-D",
-    };
-    tmux::run(["resize-pane", flag, size.id.as_str()])
-}
-
 fn run_copy_mode(action: Option<&str>, context: &ManagerContext) -> Result<()> {
     const COMMANDS: &[(&str, &str, bool)] = &[
         ("append-selection", "Append selection to clipboard", false),
@@ -931,444 +529,6 @@ fn execute_binding(line: &str) -> Result<()> {
         tmux::run_ignore(["copy-mode"]);
     }
     tmux::run(parts[index..].iter().map(String::as_str))
-}
-
-fn run_clipboard(action: Option<&str>, context: &ManagerContext) -> Result<()> {
-    let mut use_copyq = action != Some("buffer") && tmux::have("copyq");
-    let mut snapshot = None;
-    if use_copyq {
-        match load_copyq_snapshot() {
-            Ok(loaded) => snapshot = Some(loaded),
-            Err(_) => {
-                let _ = Command::new("copyq")
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn();
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                match load_copyq_snapshot() {
-                    Ok(loaded) => snapshot = Some(loaded),
-                    Err(error) if action == Some("system") => {
-                        return Err(error).context(
-                            "CopyQ is installed but its clipboard service or snapshot is unavailable",
-                        );
-                    }
-                    Err(_) => use_copyq = false,
-                }
-            }
-        }
-    }
-    if use_copyq {
-        let mut snapshot = snapshot.context("CopyQ snapshot is unavailable")?;
-        let rows: Vec<Row> = snapshot
-            .entries
-            .iter()
-            .map(|entry| Row::new(entry.source_index.to_string(), &entry.summary))
-            .collect();
-        let selected = choose_with_preview(
-            &rows,
-            context,
-            "clipboard> ",
-            "TAB selects multiple clipboard entries",
-            true,
-            Some(PreviewSpec::Blob {
-                path: snapshot.data.path(),
-                entries: &snapshot.entries,
-            }),
-        )?;
-        if !selected.is_empty() {
-            let content = read_clipboard_entries(&mut snapshot, &selected)?;
-            paste_bytes(context, &content)?;
-        }
-    } else {
-        let output = tmux::stdout([
-            "list-buffers",
-            "-F",
-            "#{buffer_name}\t#{buffer_size}\t#{buffer_sample}",
-        ])?;
-        let rows: Vec<Row> = output
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.splitn(3, '\t');
-                Some(Row::new(
-                    fields.next()?,
-                    format!(
-                        "{:>8} bytes  {}",
-                        fields.next()?,
-                        fields.next().unwrap_or_default()
-                    ),
-                ))
-            })
-            .collect();
-        let selected = selected_rows(
-            &rows,
-            context,
-            "buffer> ",
-            "TAB selects multiple tmux buffers",
-            true,
-            Some("buffer"),
-        )?;
-        let commands = selected
-            .iter()
-            .map(|row| command(["paste-buffer", "-b", row.id.as_str()]))
-            .collect::<Vec<_>>();
-        if !commands.is_empty() {
-            context.tmux.run_commands(&commands)?;
-        }
-    }
-    Ok(())
-}
-
-fn load_copyq_snapshot() -> Result<ClipboardSnapshot> {
-    let script = format!(
-        "var limit = Math.min(size(), {COPYQ_MAX_ITEMS}); \
-         for (var i = 0; i < limit; ++i) {{ \
-         print(i + '\\t' + toBase64(read(i)) + '\\n'); }}"
-    );
-    let output = command_stdout_bytes("copyq", ["eval", "--", script.as_str()])?;
-    parse_copyq_snapshot(&output)
-}
-
-fn parse_copyq_snapshot(output: &[u8]) -> Result<ClipboardSnapshot> {
-    let encoded = std::str::from_utf8(output).context("CopyQ snapshot is not UTF-8 base64 data")?;
-    let mut data = NamedTempFile::new()?;
-    let mut entries = Vec::new();
-    let mut offset = 0_u64;
-    for line in encoded.lines() {
-        let (source_index, encoded_content) = line
-            .split_once('\t')
-            .context("CopyQ snapshot record is missing its delimiter")?;
-        let source_index = source_index
-            .parse()
-            .context("CopyQ snapshot contains an invalid source index")?;
-        let content = BASE64
-            .decode(encoded_content)
-            .context("CopyQ snapshot contains invalid base64 content")?;
-        let next_size = usize::try_from(offset)
-            .ok()
-            .and_then(|size| size.checked_add(content.len()))
-            .context("CopyQ snapshot size overflow")?;
-        if next_size > COPYQ_MAX_BYTES {
-            anyhow::bail!(
-                "CopyQ snapshot exceeds the {} MiB safety limit",
-                COPYQ_MAX_BYTES / 1024 / 1024
-            );
-        }
-        data.write_all(&content)?;
-        entries.push(ClipboardEntry {
-            source_index,
-            summary: clipboard_summary(&content),
-            offset,
-            length: content.len() as u64,
-        });
-        offset = offset
-            .checked_add(content.len() as u64)
-            .context("CopyQ snapshot offset overflow")?;
-    }
-    data.flush()?;
-    Ok(ClipboardSnapshot { entries, data })
-}
-
-fn clipboard_summary(content: &[u8]) -> String {
-    let text = String::from_utf8_lossy(content);
-    let preview = sanitize_preview_text(&text.chars().take(512).collect::<String>());
-    let summary = one_line(&preview);
-    if summary.is_empty() {
-        "[empty]".into()
-    } else {
-        summary
-    }
-}
-
-fn read_clipboard_entries(snapshot: &mut ClipboardSnapshot, indexes: &[usize]) -> Result<Vec<u8>> {
-    let total = indexes.iter().try_fold(0_usize, |total, index| {
-        let length = usize::try_from(
-            snapshot
-                .entries
-                .get(*index)
-                .context("clipboard selection is out of range")?
-                .length,
-        )
-        .context("clipboard entry is too large")?;
-        total
-            .checked_add(length)
-            .context("clipboard paste is too large")
-    })?;
-    let mut result = Vec::with_capacity(total);
-    for index in indexes {
-        let entry = snapshot
-            .entries
-            .get(*index)
-            .context("clipboard selection is out of range")?;
-        snapshot
-            .data
-            .as_file_mut()
-            .seek(SeekFrom::Start(entry.offset))?;
-        let start = result.len();
-        result.resize(start + entry.length as usize, 0);
-        snapshot
-            .data
-            .as_file_mut()
-            .read_exact(&mut result[start..])?;
-    }
-    Ok(result)
-}
-
-fn paste_bytes(context: &ManagerContext, content: &[u8]) -> Result<()> {
-    let name = format!("tnx-{}", std::process::id());
-    context.tmux.run_with_input(
-        [
-            "load-buffer",
-            "-b",
-            name.as_str(),
-            "-",
-            ";",
-            "paste-buffer",
-            "-b",
-            name.as_str(),
-            ";",
-            "delete-buffer",
-            "-b",
-            name.as_str(),
-        ],
-        content,
-    )
-}
-
-fn run_process(action: Option<&str>, context: &ManagerContext) -> Result<()> {
-    let mut actions = vec![
-        "display",
-        "terminate",
-        "kill",
-        "interrupt",
-        "continue",
-        "stop",
-        "quit",
-        "hangup",
-    ];
-    if tmux::have("pstree") {
-        actions.insert(1, "tree");
-    }
-    let action = resolve_action(action, &actions, context, "process action> ")?;
-    if action.is_empty() {
-        return Ok(());
-    }
-    let processes = process_rows()?;
-    let rows: Vec<Row> = processes
-        .iter()
-        .map(|process| process.row.clone())
-        .collect();
-    let multi = !matches!(action.as_str(), "display" | "tree");
-    let indexes = choose(
-        &rows,
-        context,
-        "process> ",
-        "Select a process; TAB selects multiple signal targets",
-        multi,
-        None,
-    )?;
-    if indexes.is_empty() {
-        return Ok(());
-    }
-    if action == "display" {
-        return display_process(context, processes[indexes[0]].pid);
-    }
-    if action == "tree" {
-        return popup_or_split(
-            context,
-            &format!("pstree -p {}", processes[indexes[0]].pid),
-            "70%",
-            "70%",
-        );
-    }
-    let (signal_name, signal_number) = match action.as_str() {
-        "terminate" => ("TERM", libc::SIGTERM),
-        "kill" => ("KILL", libc::SIGKILL),
-        "interrupt" => ("INT", libc::SIGINT),
-        "continue" => ("CONT", libc::SIGCONT),
-        "stop" => ("STOP", libc::SIGSTOP),
-        "quit" => ("QUIT", libc::SIGQUIT),
-        "hangup" => ("HUP", libc::SIGHUP),
-        _ => unreachable!(),
-    };
-    let selected: Vec<&ProcessEntry> = indexes.iter().map(|index| &processes[*index]).collect();
-    signal_processes(context, signal_name, signal_number, &selected)
-}
-
-fn process_rows() -> Result<Vec<ProcessEntry>> {
-    let output = command_stdout(
-        "ps",
-        [
-            "-eo",
-            "uid=,user=,pid=,lstart=,ppid=,stat=,%cpu=,%mem=,command=",
-        ],
-    )?;
-    Ok(output.lines().filter_map(parse_process_entry).collect())
-}
-
-fn parse_process_entry(line: &str) -> Option<ProcessEntry> {
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    let uid: u32 = fields.first()?.parse().ok()?;
-    let pid: u32 = fields.get(2)?.parse().ok()?;
-    let started = fields.get(3..8)?.join(" ");
-    Some(ProcessEntry {
-        row: Row::new(pid.to_string(), line.trim()),
-        uid,
-        pid,
-        started,
-    })
-}
-
-fn signal_processes(
-    context: &ManagerContext,
-    signal_name: &str,
-    signal_number: i32,
-    processes: &[&ProcessEntry],
-) -> Result<()> {
-    if !confirm_action(
-        context,
-        &format!("Send {signal_name} to selected process(es)?"),
-    )? {
-        return Ok(());
-    }
-    let current_uid = unsafe { libc::geteuid() };
-    let privilege = ["sudo", "doas"]
-        .into_iter()
-        .find(|program| tmux::have(program));
-    let current = current_process_identities(processes)?;
-    let mut succeeded = Vec::new();
-    let mut failures = Vec::new();
-    for process in processes {
-        let Some(identity) = current.get(&process.pid) else {
-            failures.push(format!("{} exited", process.pid));
-            continue;
-        };
-        if identity.uid != process.uid || identity.started != process.started {
-            failures.push(format!("{} changed identity", process.pid));
-            continue;
-        }
-        let result: Result<()> = if process.uid == current_uid {
-            match libc::pid_t::try_from(process.pid) {
-                Ok(pid) => {
-                    let status = unsafe { libc::kill(pid, signal_number) };
-                    if status == 0 {
-                        Ok(())
-                    } else {
-                        Err(std::io::Error::last_os_error().into())
-                    }
-                }
-                Err(_) => Err(anyhow::anyhow!("PID is outside the platform range")),
-            }
-        } else if let Some(program) = privilege {
-            match Command::new(program)
-                .args(["kill", "-s", signal_name, &process.pid.to_string()])
-                .status()
-            {
-                Ok(status) if status.success() => Ok(()),
-                Ok(status) => Err(anyhow::anyhow!("{program} exited with status {status}")),
-                Err(error) => Err(error).with_context(|| format!("failed to start {program}")),
-            }
-        } else {
-            Err(anyhow::anyhow!(
-                "install sudo or doas to signal UID {}",
-                process.uid
-            ))
-        };
-        match result {
-            Ok(()) => succeeded.push(process.pid),
-            Err(error) => failures.push(format!("{}: {error:#}", process.pid)),
-        }
-    }
-    if failures.is_empty() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "sent {signal_name} to {} process(es); failed for {}",
-        succeeded.len(),
-        failures.join(", ")
-    )
-}
-
-fn current_process_identities(
-    processes: &[&ProcessEntry],
-) -> Result<HashMap<u32, ProcessIdentity>> {
-    let pids = processes
-        .iter()
-        .map(|process| process.pid.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let output = Command::new("ps")
-        .args(["-o", "uid=,pid=,lstart=", "-p", pids.as_str()])
-        .output()
-        .context("failed to revalidate selected processes")?;
-    if !output.status.success() && output.status.code() != Some(1) {
-        anyhow::bail!(
-            "ps failed while revalidating processes: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_process_identity)
-        .collect())
-}
-
-fn parse_process_identity(line: &str) -> Option<(u32, ProcessIdentity)> {
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    let uid: u32 = fields.first()?.parse().ok()?;
-    let pid: u32 = fields.get(1)?.parse().ok()?;
-    let started = fields.get(2..7)?.join(" ");
-    Some((pid, ProcessIdentity { uid, started }))
-}
-
-fn confirm_action(context: &ManagerContext, prompt: &str) -> Result<bool> {
-    if !context.config.confirm {
-        return Ok(true);
-    }
-    let rows = [Row::new("yes", "yes"), Row::new("no", "no")];
-    Ok(choose(&rows, context, "confirm> ", prompt, false, None)?
-        .first()
-        .is_some_and(|index| rows[*index].id == "yes"))
-}
-
-fn display_process(context: &ManagerContext, pid: u32) -> Result<()> {
-    let command = if cfg!(target_os = "macos") {
-        format!("top -pid {pid}")
-    } else {
-        format!("top -p {pid}")
-    };
-    popup_or_split(context, &command, "70%", "70%")
-}
-
-fn popup_or_split(
-    context: &ManagerContext,
-    command: &str,
-    width: &str,
-    height: &str,
-) -> Result<()> {
-    if context.picker.tmux_popup {
-        context.tmux.run([
-            "display-popup",
-            "-E",
-            "-w",
-            width,
-            "-h",
-            height,
-            "-d",
-            "#{pane_current_path}",
-            command,
-        ])
-    } else {
-        context.tmux.run([
-            "split-window",
-            "-v",
-            "-l",
-            "50%",
-            "-c",
-            "#{pane_current_path}",
-            command,
-        ])
-    }
 }
 
 fn run_menu(context: &ManagerContext) -> Result<()> {
@@ -1674,15 +834,15 @@ fn choose_with_preview(
         for (index, row) in rows.iter().enumerate() {
             let result = match preview_spec {
                 Some(PreviewSpec::Blob { entries, .. }) => {
-                    let entry = entries
+                    let (offset, length) = entries
                         .get(index)
                         .context("clipboard preview entry is out of range")?;
                     writeln!(
                         stdin,
                         "{}\t{}\t{}\t{}",
                         index,
-                        entry.offset,
-                        entry.length,
+                        offset,
+                        length,
                         sanitize(&row.display)
                     )
                 }
@@ -1929,62 +1089,6 @@ fn sanitize(value: &str) -> String {
         .collect()
 }
 
-fn one_line(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn print_blob_preview(path: &Path, offset: u64, length: u64) -> Result<()> {
-    let mut file = File::open(path)
-        .with_context(|| format!("failed to open preview data {}", path.display()))?;
-    let file_size = file.metadata()?.len();
-    let end = offset
-        .checked_add(length)
-        .context("preview byte range overflow")?;
-    if end > file_size {
-        anyhow::bail!("preview byte range is outside the snapshot");
-    }
-    let preview_length = length.min(CLIPBOARD_PREVIEW_BYTES as u64) as usize;
-    let mut content = vec![0; preview_length];
-    file.seek(SeekFrom::Start(offset))?;
-    file.read_exact(&mut content)?;
-    match std::str::from_utf8(&content) {
-        Ok(text) => print!("{}", sanitize_preview_text(text)),
-        Err(_) => {
-            println!("[binary clipboard entry: {length} bytes]");
-            print_hex_preview(&content[..content.len().min(4096)]);
-        }
-    }
-    if length > preview_length as u64 {
-        println!(
-            "\n[preview truncated at {} KiB of {} KiB]",
-            preview_length / 1024,
-            length.div_ceil(1024)
-        );
-    }
-    Ok(())
-}
-
-fn sanitize_preview_text(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| match character {
-            '\n' | '\t' => character,
-            _ if character.is_control() => '�',
-            _ => character,
-        })
-        .collect()
-}
-
-fn print_hex_preview(content: &[u8]) {
-    for (offset, chunk) in content.chunks(16).enumerate() {
-        print!("{:08x}  ", offset * 16);
-        for byte in chunk {
-            print!("{byte:02x} ");
-        }
-        println!();
-    }
-}
-
 fn print_tmux<I, S>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
@@ -1992,36 +1096,6 @@ where
 {
     print!("{}", tmux::stdout(args)?);
     Ok(())
-}
-
-fn command_stdout<I, S>(program: &str, args: I) -> Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new(program).args(args).output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn command_stdout_bytes<I, S>(program: &str, args: I) -> Result<Vec<u8>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new(program).args(args).output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(output.stdout)
 }
 
 fn ensure_program(program: &str, message: &str) -> Result<()> {
@@ -2035,10 +1109,8 @@ fn ensure_program(program: &str, message: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bool, parse_copyq_snapshot, parse_menu, parse_pane_entry, parse_process_entry,
-        parse_process_identity, parse_session_entry, parse_window_entry, picker_exit,
-        read_clipboard_entries, sanitize_preview_text, without_multi, without_popup_options,
-        without_tmux_options, PickerExit,
+        parse_bool, parse_menu, parse_pane_entry, parse_session_entry, parse_window_entry,
+        picker_exit, without_multi, without_popup_options, without_tmux_options, PickerExit,
     };
 
     #[test]
@@ -2132,41 +1204,5 @@ mod tests {
         assert_eq!(pane.window_id, "@2");
         assert_eq!(pane.pane_id, "%3");
         assert_eq!(pane.row.display, "work:1.0\ttitle");
-    }
-
-    #[test]
-    fn copyq_snapshot_preserves_empty_multiline_and_binary_entries() {
-        let mut snapshot = parse_copyq_snapshot(b"0\taGVsbG8Kd29ybGQ=\n1\t\n2\tAP+A\n").unwrap();
-        assert_eq!(snapshot.entries.len(), 3);
-        assert_eq!(snapshot.entries[0].summary, "hello world");
-        assert_eq!(snapshot.entries[1].summary, "[empty]");
-        assert_eq!(snapshot.entries[2].summary, "���");
-        assert_eq!(
-            read_clipboard_entries(&mut snapshot, &[2, 0]).unwrap(),
-            b"\0\xff\x80hello\nworld"
-        );
-    }
-
-    #[test]
-    fn clipboard_preview_removes_terminal_control_sequences() {
-        assert_eq!(
-            sanitize_preview_text("safe\n\x1b[31mred\t\x07"),
-            "safe\n�[31mred\t�"
-        );
-    }
-
-    #[test]
-    fn parses_numeric_process_identity_and_start_time() {
-        let process =
-            parse_process_entry("1000 alice 42 Sun Jul 12 19:52:57 2026 1 S 0.0 0.1 sleep 60")
-                .unwrap();
-        assert_eq!(process.uid, 1000);
-        assert_eq!(process.pid, 42);
-        assert_eq!(process.started, "Sun Jul 12 19:52:57 2026");
-
-        let (pid, identity) = parse_process_identity("1000 42 Sun Jul 12 19:52:57 2026").unwrap();
-        assert_eq!(pid, 42);
-        assert_eq!(identity.uid, 1000);
-        assert_eq!(identity.started, process.started);
     }
 }
