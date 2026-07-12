@@ -213,7 +213,7 @@ Manager settings use `@tmux_history_finder_manager_*` tmux options or
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `key` | `F` | tmux prefix binding |
+| `key` | `F` | tmux prefix binding; set it to an empty value to disable |
 | `order` | `history|copy-mode|session|window|pane|command|keybinding|clipboard|process` | category order and visibility |
 | `fzf_options` | `-p -w 62% -h 38%` | fzf-tmux popup/layout options |
 | `preview`, `preview_follow` | `1`, `1` | preview visibility and follow mode |

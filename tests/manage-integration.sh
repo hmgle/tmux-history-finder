@@ -124,4 +124,7 @@ if kill -0 "$child_pid" 2>/dev/null; then
     exit 1
 fi
 
+tmux -L "$SOCKET" set-option -g @tmux_history_finder_manager_key ''
+THF_TMUX_ARGS="-L $SOCKET" "$BIN" doctor | grep -Fq 'manager: key= order='
+
 echo "manager integration tests passed"

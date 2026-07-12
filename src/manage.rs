@@ -155,11 +155,16 @@ impl ManagerConfig {
             .map(ToOwned::to_owned)
             .collect();
         let menu = get("menu", "THF_MANAGER_MENU", "TMUX_FZF_MENU");
+        let key = env::var("THF_MANAGER_KEY")
+            .ok()
+            .or_else(|| tmux::show_option_allow_empty("@tmux_history_finder_manager_key"))
+            .or_else(|| env::var("TMUX_FZF_LAUNCH_KEY").ok())
+            .unwrap_or_else(|| "F".into());
         if menu.is_some() && !order.iter().any(|item| item == "menu") {
             order.push("menu".into());
         }
         Ok(Self {
-            key: get("key", "THF_MANAGER_KEY", "TMUX_FZF_LAUNCH_KEY").unwrap_or_else(|| "F".into()),
+            key,
             order,
             fzf_options: get("fzf_options", "THF_MANAGER_FZF_OPTIONS", "TMUX_FZF_OPTIONS")
                 .unwrap_or_else(|| "-p -w 62% -h 38%".into()),

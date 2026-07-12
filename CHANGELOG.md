@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `history_finder.sh manage [category] [action]` for direct bindings and
   `@tmux_history_finder_manager_*` / `THF_MANAGER_*` configuration.
 - Added compatibility fallbacks for the corresponding `TMUX_FZF_*` variables.
+- Added an empty manager key setting to disable the default `Prefix+F` binding.
 - Added CopyQ clipboard history, tmux-buffer fallback, process signals, popup
   process inspection, and default confirmation for destructive actions.
 

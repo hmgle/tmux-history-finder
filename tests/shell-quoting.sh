@@ -46,6 +46,15 @@ printf '%s\n' "$motion_binding" | grep -Fq 'quote/scripts/motion-s.sh'
 printf '%s\n' "$manager_binding" | grep -Fq 'plugin\\ space'
 printf '%s\n' "$manager_binding" | grep -Fq 'quote/history_finder.sh manage'
 
+"$REAL_TMUX" -L "$SOCKET" unbind-key F
+"$REAL_TMUX" -L "$SOCKET" set-option -g @tmux_history_finder_manager_key ''
+bash "$plugin/tmux_history_finder.tmux"
+if "$REAL_TMUX" -L "$SOCKET" list-keys -T prefix | \
+    grep -Eq 'prefix[[:space:]]+F[[:space:]].*history_finder.sh manage'; then
+    echo "shell quoting: empty manager key still created a binding" >&2
+    exit 1
+fi
+
 command_path="$TMP/command space'quote"
 cat > "$command_path" <<'EOF'
 #!/bin/sh

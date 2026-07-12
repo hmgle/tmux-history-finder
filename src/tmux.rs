@@ -269,6 +269,18 @@ pub fn show_option(name: &str) -> Option<String> {
     try_stdout(["show-option", "-gqv", name]).filter(|value| !value.is_empty())
 }
 
+pub fn show_option_allow_empty(name: &str) -> Option<String> {
+    let output = TmuxClient::from_env()
+        .ok()?
+        .output(["show-option", "-g", name])
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    parse_show_option_line(line.trim()).map(|(_, value)| value)
+}
+
 pub fn show_options(prefix: &str) -> Result<Vec<(String, String)>> {
     let output = stdout(["show-options", "-gq"])?;
     Ok(output

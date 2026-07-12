@@ -19,8 +19,15 @@ pane_key=$(tmux show-option -gqv "@tmux_history_finder_pane_key" 2>/dev/null)
 motion_key=$(tmux show-option -gqv "@tmux_history_finder_motion_key" 2>/dev/null)
 motion_key="${motion_key:-s}"
 motion2_key=$(tmux show-option -gqv "@tmux_history_finder_motion2_key" 2>/dev/null)
-manager_option_key=$(tmux show-option -gqv "@tmux_history_finder_manager_key" 2>/dev/null)
-manager_key="${THF_MANAGER_KEY:-${manager_option_key:-${TMUX_FZF_LAUNCH_KEY:-F}}}"
+if [ "${THF_MANAGER_KEY+x}" = x ]; then
+    manager_key="$THF_MANAGER_KEY"
+elif tmux show-option -g "@tmux_history_finder_manager_key" >/dev/null 2>&1; then
+    manager_key=$(tmux show-option -gqv "@tmux_history_finder_manager_key" 2>/dev/null)
+elif [ "${TMUX_FZF_LAUNCH_KEY+x}" = x ]; then
+    manager_key="$TMUX_FZF_LAUNCH_KEY"
+else
+    manager_key="F"
+fi
 motion_copy_mode_no_prefix=$(tmux show-option -gqv "@tmux_history_finder_motion_copy_mode_no_prefix" 2>/dev/null)
 motion_copy_mode_no_prefix="${motion_copy_mode_no_prefix:-${THF_MOTION_COPY_MODE_NO_PREFIX:-0}}"
 prompt_query=$(tmux show-option -gqv "@tmux_history_finder_prompt_query" 2>/dev/null)
@@ -81,5 +88,12 @@ esac
 
 if [ -z "$(tmux show-option -gqv "@thf_loaded")" ]; then
     tmux set-option -g "@thf_loaded" "1"
-    tmux display-message "tmux-history-finder loaded: Prefix+$launch_key search, Prefix+$manager_key manage, Prefix+$motion_key motion" 2>/dev/null || :
+    loaded_message="tmux-history-finder loaded: Prefix+$launch_key search"
+    if [ -n "$manager_key" ]; then
+        loaded_message="$loaded_message, Prefix+$manager_key manage"
+    fi
+    if [ -n "$motion_key" ]; then
+        loaded_message="$loaded_message, Prefix+$motion_key motion"
+    fi
+    tmux display-message "$loaded_message" 2>/dev/null || :
 fi
