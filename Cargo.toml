@@ -1,12 +1,12 @@
 [package]
-name = "tmux-history-finder"
+name = "tmux-nexus"
 version = "0.7.0"
 edition = "2021"
 license = "MIT"
-description = "Fast tmux pane history search with a Rust backend and fzf UI"
+description = "Unified tmux search, motion, and workspace management"
 
 [[bin]]
-name = "thf"
+name = "tnx"
 path = "src/main.rs"
 
 [dependencies]

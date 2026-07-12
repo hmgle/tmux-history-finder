@@ -151,9 +151,7 @@ fn copy_text(text: &str) -> Result<()> {
     } else {
         "no system clipboard found"
     };
-    tmux::display_message(&format!(
-        "tmux-history-finder: copied to tmux buffer ({reason})"
-    ));
+    tmux::display_message(&format!("tmux-nexus: copied to tmux buffer ({reason})"));
     Ok(())
 }
 

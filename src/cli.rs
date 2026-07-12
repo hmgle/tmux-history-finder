@@ -18,9 +18,9 @@ use crate::{
 
 #[derive(Parser)]
 #[command(
-    name = "tmux-history-finder",
+    name = "tnx",
     version,
-    about = "Search tmux pane history with a fast Rust backend and fzf UI"
+    about = "Search, navigate, and manage tmux workspaces"
 )]
 struct App {
     #[command(subcommand)]
@@ -233,7 +233,7 @@ fn run_search(args: SearchArgs) -> Result<()> {
     let index = capture::build_index(&config, args.target_pane.as_deref())?;
 
     if index.records.is_empty() {
-        tmux::display_message("tmux-history-finder: no pane content to search");
+        tmux::display_message("tmux-nexus: no pane content to search");
         return Ok(());
     }
 
@@ -241,8 +241,8 @@ fn run_search(args: SearchArgs) -> Result<()> {
     if record_ids.is_empty() {
         let msg = query
             .as_deref()
-            .map(|query| format!("tmux-history-finder: no matches for '{query}'"))
-            .unwrap_or_else(|| "tmux-history-finder: no matches".to_string());
+            .map(|query| format!("tmux-nexus: no matches for '{query}'"))
+            .unwrap_or_else(|| "tmux-nexus: no matches".to_string());
         tmux::display_message(&msg);
         return Ok(());
     }
@@ -255,7 +255,7 @@ fn run_search(args: SearchArgs) -> Result<()> {
     }
 
     ensure_fzf()?;
-    let preview_dir = Builder::new().prefix("thf_preview.").tempdir()?;
+    let preview_dir = Builder::new().prefix("tnx_preview.").tempdir()?;
     if config.preview {
         index.save_preview_panes(preview_dir.path())?;
     }
@@ -331,7 +331,7 @@ fn run_motion(args: motion::MotionArgs) -> Result<()> {
 }
 
 fn run_doctor() -> Result<()> {
-    println!("tmux-history-finder {}", env!("CARGO_PKG_VERSION"));
+    println!("tnx {}", env!("CARGO_PKG_VERSION"));
     println!("tmux: {}", describe_program("tmux", &["-V"], true));
     println!("fzf: {}", describe_program("fzf", &["--version"], true));
     println!(

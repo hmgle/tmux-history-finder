@@ -1,8 +1,8 @@
 name: release
 
-# Build prebuilt `thf` binaries and attach them to the GitHub Release whenever a
+# Build prebuilt `tnx` binaries and attach them to the GitHub Release whenever a
 # version tag is pushed. scripts/install-binary.sh downloads these assets, so the
-# asset names here (thf-<target>.tar.gz) must stay in sync with that script.
+# asset names here (tnx-<target>.tar.gz) must stay in sync with that script.
 
 on:
   push:
@@ -96,9 +96,9 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          dist="thf-${{ matrix.target }}"
+          dist="tnx-${{ matrix.target }}"
           mkdir -p "$dist"
-          cp "target/${{ matrix.target }}/release/thf" "$dist/"
+          cp "target/${{ matrix.target }}/release/tnx" "$dist/"
           cp README.md LICENSE CHANGELOG.md "$dist/" 2>/dev/null || true
           tar -czf "$dist.tar.gz" "$dist"
           if command -v sha256sum >/dev/null 2>&1; then
@@ -112,5 +112,5 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
-            thf-${{ matrix.target }}.tar.gz
-            thf-${{ matrix.target }}.tar.gz.sha256
+            tnx-${{ matrix.target }}.tar.gz
+            tnx-${{ matrix.target }}.tar.gz.sha256

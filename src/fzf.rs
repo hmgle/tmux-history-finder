@@ -140,7 +140,7 @@ fn picker_args(config: &Config, index_path: &Path) -> Result<Vec<OsString>> {
 
     if !config.fzf_options.trim().is_empty() {
         let extra = shell_words::split(&config.fzf_options)
-            .context("failed to parse fzf_options/THF_FZF_OPTIONS")?;
+            .context("failed to parse fzf_options/TNX_FZF_OPTIONS")?;
         args.extend(extra.into_iter().map(OsString::from));
     }
 

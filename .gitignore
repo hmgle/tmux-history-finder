@@ -13,8 +13,8 @@ target/
 bin/
 
 # Runtime temp files this plugin may leave behind on a crash
-thf_panes.*
-thf_index.*
-thf_index.*.json
-thf_filter.*
-thf_prev.*
+tnx_panes.*
+tnx_index.*
+tnx_index.*.json
+tnx_filter.*
+tnx_prev.*

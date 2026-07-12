@@ -1,17 +1,15 @@
-# tmux-history-finder
+# tmux-nexus
 
-[![ci](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/hmgle/tmux-history-finder/actions/workflows/shellcheck.yml)
+[![ci](https://github.com/hmgle/tmux-nexus/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/hmgle/tmux-nexus/actions/workflows/shellcheck.yml)
 
-Search the visible text and scrollback history of every tmux pane from one fast
-picker, then jump to, copy, send, or print the selected match.
+A unified tmux search, motion, and workspace manager. Search visible text and
+scrollback across panes, jump with on-screen motion hints, and manage sessions,
+windows, panes, buffers, processes, commands, and key bindings from fast fzf
+pickers.
 
-This branch uses a Rust backend (`thf`) for capture, indexing, search, preview,
-and actions. The tmux plugin entry point and legacy shell script paths remain as
-small compatibility wrappers.
-
-It also includes a tmux-easymotion style visible-pane motion mode: jump to any
-matching character currently visible in the active tmux window using short
-on-screen hints.
+The `tnx` Rust backend handles capture, indexing, search, preview, actions,
+motion, and workspace management. The repository-level `tnx` launcher selects
+a local build or installs a checksum-verified release binary when needed.
 
 ## Requirements
 
@@ -29,17 +27,17 @@ on-screen hints.
 With TPM:
 
 ```tmux
-set -g @plugin 'hmgle/tmux-history-finder'
+set -g @plugin 'hmgle/tmux-nexus'
 ```
 
-The wrapper `history_finder.sh` resolves the `thf` backend in this order:
+The wrapper `tnx` resolves the `tnx` backend in this order:
 
-1. `$THF_BIN`, if set to an executable.
-2. A locally built binary (`target/release/thf` or `target/debug/thf`).
-3. A current, previously downloaded binary (`bin/thf`).
+1. `$TNX_BIN`, if set to an executable.
+2. A locally built binary (`target/release/tnx` or `target/debug/tnx`).
+3. A current, previously downloaded binary (`bin/tnx`).
 4. `cargo run`, when a Rust toolchain is present (source checkouts/development).
 5. Otherwise, a prebuilt release binary is downloaded for your platform via
-   `scripts/install-binary.sh` (checksum-verified) into `bin/thf`.
+   `scripts/install-binary.sh` (checksum-verified) into `bin/tnx`.
 
 Local and downloaded binaries are used only when their version matches
 `Cargo.toml` and they are newer than the Rust sources. A plain tagged TPM
@@ -49,10 +47,10 @@ release binary automatically; build those with Cargo instead. To prefetch a
 tagged release explicitly (or in a post-install hook):
 
 ```sh
-bash ~/.tmux/plugins/tmux-history-finder/scripts/install-binary.sh
+bash ~/.tmux/plugins/tmux-nexus/scripts/install-binary.sh
 ```
 
-Set `THF_AUTO_DOWNLOAD=0` to disable the download fallback, or `THF_BIN=/path/to/thf`
+Set `TNX_AUTO_DOWNLOAD=0` to disable the download fallback, or `TNX_BIN=/path/to/tnx`
 to use your own binary. For development, build the backend once:
 
 ```sh
@@ -62,7 +60,7 @@ cargo build --release
 Manual install:
 
 ```tmux
-run-shell /path/to/tmux-history-finder/tmux_history_finder.tmux
+run-shell /path/to/tmux-nexus/tmux_nexus.tmux
 ```
 
 ## Update
@@ -74,17 +72,17 @@ then rebuilds with Cargo or downloads the binary for an exact release tag.
 If you build from source, rebuild the backend after updating:
 
 ```sh
-~/.tmux/plugins/tpm/bin/update_plugins tmux-history-finder
-cargo build --release --manifest-path ~/.tmux/plugins/tmux-history-finder/Cargo.toml
+~/.tmux/plugins/tpm/bin/update_plugins tmux-nexus
+cargo build --release --manifest-path ~/.tmux/plugins/tmux-nexus/Cargo.toml
 ```
 
 If you use the prebuilt release binary, refresh the cached binary explicitly:
 
 ```sh
-~/.tmux/plugins/tpm/bin/update_plugins tmux-history-finder
-rm -f ~/.tmux/plugins/tmux-history-finder/target/release/thf \
-      ~/.tmux/plugins/tmux-history-finder/target/debug/thf
-bash ~/.tmux/plugins/tmux-history-finder/scripts/install-binary.sh --force
+~/.tmux/plugins/tpm/bin/update_plugins tmux-nexus
+rm -f ~/.tmux/plugins/tmux-nexus/target/release/tnx \
+      ~/.tmux/plugins/tmux-nexus/target/debug/tnx
+bash ~/.tmux/plugins/tmux-nexus/scripts/install-binary.sh --force
 ```
 
 Reloading `~/.tmux.conf` is usually not required unless the tmux plugin entry
@@ -92,26 +90,25 @@ script or tmux options changed.
 
 ## Usage
 
-Use `history_finder.sh` as the standalone CLI entry point. From the plugin or
-source directory, run it as `bash ./history_finder.sh`; from elsewhere, pass the
-full script path. The tmux binding calls the same wrapper internally, and the
-wrapper then resolves and execs the `thf` backend.
+Use `tnx` as the standalone CLI entry point. From the plugin or source
+directory, run it as `./tnx`; from elsewhere, pass the full path. The tmux
+binding calls the same launcher internally.
 
 ```sh
-bash ./history_finder.sh                       # interactive, all panes
-bash ./history_finder.sh error                 # pre-filter to matching records
-bash ./history_finder.sh --scope session error # current session only
-bash ./history_finder.sh --scope pane          # current pane only
-bash ./history_finder.sh --history-lines 5000  # limit scrollback captured per pane
-bash ./history_finder.sh --action copy token   # copy selected text
-bash ./history_finder.sh --print panic         # non-interactive print
-bash ./history_finder.sh --regex 'error|panic' # regex search
-bash ./history_finder.sh motion s a            # visible-pane 1-char jump
-bash ./history_finder.sh motion s2 he          # visible-pane 2-char jump
-bash ./history_finder.sh manage                # full tmux workspace manager
-bash ./history_finder.sh manage pane switch    # direct pane switcher
-bash ./history_finder.sh manage clipboard      # CopyQ/tmux buffer history
-bash ./history_finder.sh doctor                # dependency/config diagnostics
+./tnx                       # interactive, all panes
+./tnx error                 # pre-filter to matching records
+./tnx --scope session error # current session only
+./tnx --scope pane          # current pane only
+./tnx --history-lines 5000  # limit scrollback captured per pane
+./tnx --action copy token   # copy selected text
+./tnx --print panic         # non-interactive print
+./tnx --regex 'error|panic' # regex search
+./tnx motion s a            # visible-pane 1-char jump
+./tnx motion s2 he          # visible-pane 2-char jump
+./tnx manage                # full tmux workspace manager
+./tnx manage pane switch    # direct pane switcher
+./tnx manage clipboard      # CopyQ/tmux buffer history
+./tnx doctor                # dependency/config diagnostics
 ```
 
 Inside fzf:
@@ -133,7 +130,7 @@ Motion mode:
 | configured `motion2_key` | Prompt for two characters and jump to the selected matching pair                        |
 
 The two-character binding is disabled by default. Set
-`@tmux_history_finder_motion2_key` to enable it.
+`@tmux_nexus_motion2_key` to enable it.
 
 Workspace manager:
 
@@ -159,57 +156,57 @@ contain spaces, colons, quotes, and duplicate display text safely.
 Set options in tmux:
 
 ```tmux
-set -g @tmux_history_finder_launch_key "g"
-set -g @tmux_history_finder_pane_key "/"
-set -g @tmux_history_finder_default_action "jump"
-set -g @tmux_history_finder_scope "all"
-set -g @tmux_history_finder_prompt_query "0"
-set -g @tmux_history_finder_history_lines "0"
-set -g @tmux_history_finder_motion_key "s"
-set -g @tmux_history_finder_motion2_key "S"
-set -g @tmux_history_finder_motion_hints "asdghklqwertyuiopzxcvbnmfj;"
-set -g @tmux_history_finder_manager_key "F"
-set -g @tmux_history_finder_manager_fzf_options "-p -w 62% -h 38% -m"
-set -g @tmux_history_finder_manager_confirm "1"
+set -g @tmux_nexus_launch_key "g"
+set -g @tmux_nexus_pane_key "/"
+set -g @tmux_nexus_default_action "jump"
+set -g @tmux_nexus_scope "all"
+set -g @tmux_nexus_prompt_query "0"
+set -g @tmux_nexus_history_lines "0"
+set -g @tmux_nexus_motion_key "s"
+set -g @tmux_nexus_motion2_key "S"
+set -g @tmux_nexus_motion_hints "asdghklqwertyuiopzxcvbnmfj;"
+set -g @tmux_nexus_manager_key "F"
+set -g @tmux_nexus_manager_fzf_options "-p -w 62% -h 38% -m"
+set -g @tmux_nexus_manager_confirm "1"
 ```
 
 Or use environment variables:
 
 ```sh
-THF_DEFAULT_ACTION=copy bash ./history_finder.sh token
-THF_TMUX_ARGS='-L work' bash ./history_finder.sh --scope session error
+TNX_DEFAULT_ACTION=copy ./tnx token
+TNX_TMUX_ARGS='-L work' ./tnx --scope session error
 ```
 
 Supported values:
 
 | Option / env var                                                | Default                       | Values                                                  |
 | --------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------- |
-| `launch_key` / `THF_LAUNCH_KEY`                                 | `g`                           | tmux prefix binding                                     |
+| `launch_key` / `TNX_LAUNCH_KEY`                                 | `g`                           | tmux prefix binding                                     |
 | `pane_key`                                                      | empty                         | tmux prefix binding for current-pane search             |
-| `scope` / `THF_SCOPE`                                           | `all`                         | `all`, `session`, `pane`                                |
-| `include_history` / `THF_INCLUDE_HISTORY`                       | `1`                           | `1` or `0`                                              |
-| `history_lines` / `THF_HISTORY_LINES`                           | `0`                           | `0` for all history, or a positive line count           |
-| `case` / `THF_CASE`                                             | `smart`                       | `smart`, `sensitive`, `insensitive`                     |
-| `join_wraps` / `THF_JOIN_WRAPS`                                 | `1`                           | `1` or `0`                                              |
-| `skip_blank` / `THF_SKIP_BLANK`                                 | `1`                           | `1` or `0`                                              |
-| `preview` / `THF_PREVIEW`                                       | `1`                           | `1` or `0`                                              |
-| `prompt_query` / `THF_PROMPT_QUERY`                             | `0`                           | `1` asks for a query before capturing panes             |
-| `default_action` / `THF_DEFAULT_ACTION`                         | `jump`                        | `jump`, `copy`, `send`, `print`                         |
-| `fzf_options` / `THF_FZF_OPTIONS`                               | empty                         | extra fzf arguments                                     |
-| `motion_key` / `THF_MOTION_KEY`                                 | `s`                           | tmux prefix binding for 1-character visible-pane motion |
-| `motion2_key` / `THF_MOTION2_KEY`                               | empty                         | tmux prefix binding for 2-character visible-pane motion |
-| `motion_hints` / `THF_MOTION_HINTS`                             | `asdghklqwertyuiopzxcvbnmfj;` | characters used for motion hints                        |
-| `motion_case` / `THF_MOTION_CASE`                               | `insensitive`                 | `smart`, `sensitive`, `insensitive`                     |
-| `motion_smartsign` / `THF_MOTION_SMARTSIGN`                     | `0`                           | `1` also matches shifted symbols such as `1` -> `!`     |
-| `motion_copy_mode_no_prefix` / `THF_MOTION_COPY_MODE_NO_PREFIX` | `0`                           | bind motion keys directly in copy-mode tables           |
-| `motion_vertical_border` / `THF_MOTION_VERTICAL_BORDER`         | `│`                           | vertical border used by the motion overlay               |
-| `motion_horizontal_border` / `THF_MOTION_HORIZONTAL_BORDER`     | `─`                           | horizontal border used by the motion overlay             |
-| `motion_hint1_fg` / `THF_MOTION_HINT1_FG`                       | `1;31`                        | SGR color for the first hint character                  |
-| `motion_hint2_fg` / `THF_MOTION_HINT2_FG`                       | `1;32`                        | SGR color for the second hint character                 |
-| `motion_dim` / `THF_MOTION_DIM`                                 | `2`                           | SGR color for dimmed pane borders                       |
+| `scope` / `TNX_SCOPE`                                           | `all`                         | `all`, `session`, `pane`                                |
+| `include_history` / `TNX_INCLUDE_HISTORY`                       | `1`                           | `1` or `0`                                              |
+| `history_lines` / `TNX_HISTORY_LINES`                           | `0`                           | `0` for all history, or a positive line count           |
+| `case` / `TNX_CASE`                                             | `smart`                       | `smart`, `sensitive`, `insensitive`                     |
+| `join_wraps` / `TNX_JOIN_WRAPS`                                 | `1`                           | `1` or `0`                                              |
+| `skip_blank` / `TNX_SKIP_BLANK`                                 | `1`                           | `1` or `0`                                              |
+| `preview` / `TNX_PREVIEW`                                       | `1`                           | `1` or `0`                                              |
+| `prompt_query` / `TNX_PROMPT_QUERY`                             | `0`                           | `1` asks for a query before capturing panes             |
+| `default_action` / `TNX_DEFAULT_ACTION`                         | `jump`                        | `jump`, `copy`, `send`, `print`                         |
+| `fzf_options` / `TNX_FZF_OPTIONS`                               | empty                         | extra fzf arguments                                     |
+| `motion_key` / `TNX_MOTION_KEY`                                 | `s`                           | tmux prefix binding for 1-character visible-pane motion |
+| `motion2_key` / `TNX_MOTION2_KEY`                               | empty                         | tmux prefix binding for 2-character visible-pane motion |
+| `motion_hints` / `TNX_MOTION_HINTS`                             | `asdghklqwertyuiopzxcvbnmfj;` | characters used for motion hints                        |
+| `motion_case` / `TNX_MOTION_CASE`                               | `insensitive`                 | `smart`, `sensitive`, `insensitive`                     |
+| `motion_smartsign` / `TNX_MOTION_SMARTSIGN`                     | `0`                           | `1` also matches shifted symbols such as `1` -> `!`     |
+| `motion_copy_mode_no_prefix` / `TNX_MOTION_COPY_MODE_NO_PREFIX` | `0`                           | bind motion keys directly in copy-mode tables           |
+| `motion_vertical_border` / `TNX_MOTION_VERTICAL_BORDER`         | `│`                           | vertical border used by the motion overlay               |
+| `motion_horizontal_border` / `TNX_MOTION_HORIZONTAL_BORDER`     | `─`                           | horizontal border used by the motion overlay             |
+| `motion_hint1_fg` / `TNX_MOTION_HINT1_FG`                       | `1;31`                        | SGR color for the first hint character                  |
+| `motion_hint2_fg` / `TNX_MOTION_HINT2_FG`                       | `1;32`                        | SGR color for the second hint character                 |
+| `motion_dim` / `TNX_MOTION_DIM`                                 | `2`                           | SGR color for dimmed pane borders                       |
 
-Manager settings use `@tmux_history_finder_manager_*` tmux options or
-`THF_MANAGER_*` environment variables:
+Manager settings use `@tmux_nexus_manager_*` tmux options or
+`TNX_MANAGER_*` environment variables:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -226,20 +223,20 @@ Manager settings use `@tmux_history_finder_manager_*` tmux options or
 | `menu_popup_width`, `menu_popup_height` | `50%`, `50%` | menu popup size |
 
 For migration, the manager also reads the corresponding `TMUX_FZF_*`
-variables when no new setting is present. The precedence is `THF_MANAGER_*`,
+variables when no new setting is present. The precedence is `TNX_MANAGER_*`,
 tmux option, legacy `TMUX_FZF_*`, then the default.
 
 Menu entries use the tmux-fzf-compatible format:
 
 ```tmux
-set -g @tmux_history_finder_manager_menu "foo\necho Hello\n\nstatus\ntmux display-message ready\n"
+set -g @tmux_nexus_manager_menu "foo\necho Hello\n\nstatus\ntmux display-message ready\n"
 ```
 
 Direct bindings do not need compatibility scripts:
 
 ```tmux
-bind-key f run-shell -b "~/.tmux/plugins/tmux-history-finder/history_finder.sh manage pane switch"
-bind-key y run-shell -b "~/.tmux/plugins/tmux-history-finder/history_finder.sh manage clipboard"
+bind-key f run-shell -b "~/.tmux/plugins/tmux-nexus/tnx manage pane switch"
+bind-key y run-shell -b "~/.tmux/plugins/tmux-nexus/tnx manage clipboard"
 ```
 
 ### Migrating from sainnhe/tmux-fzf
@@ -248,8 +245,8 @@ Remove `set -g @plugin 'sainnhe/tmux-fzf'`, keep the manager binding at its
 default `Prefix+F`, and translate persistent configuration as follows:
 
 ```tmux
-set -g @tmux_history_finder_manager_fzf_options "-p -w 86% -h 58% -m"
-set -g @tmux_history_finder_manager_pane_format \
+set -g @tmux_nexus_manager_fzf_options "-p -w 86% -h 58% -m"
+set -g @tmux_nexus_manager_pane_format \
   "#{b:pane_current_path} #{=/-26/...:#{d:pane_current_path}} [#{pane_current_command}]"
 ```
 
@@ -259,7 +256,7 @@ preferred for new configurations.
 CLI flags override configuration for that run.
 
 `pane_key` is disabled by default so the plugin does not replace tmux's existing
-binding. When enabled, the plugin resolves `history_finder.sh` relative to its
+binding. When enabled, the plugin resolves `tnx` relative to its
 own installation directory, so the binding does not depend on TPM's path.
 
 Motion hints use the configured characters as a prefix-free key set. When a
@@ -299,7 +296,7 @@ cargo clippy --locked --all-targets -- -D warnings
 env -u TMUX -u TMUX_PANE cargo test --locked
 cargo build --locked
 shellcheck -x --source-path=SCRIPTDIR \
-  history_finder.sh tmux_history_finder.tmux scripts/*.sh tests/*.sh
+  tnx tmux_nexus.tmux scripts/*.sh tests/*.sh
 bash tests/install-binary.sh
 env -u TMUX -u TMUX_PANE bash tests/shell-quoting.sh
 env -u TMUX -u TMUX_PANE bash tests/tmux-integration.sh
@@ -309,7 +306,7 @@ env -u TMUX -u TMUX_PANE bash tests/manage-integration.sh
 The tmux integration tests require `tmux`; picker workflows and CI also require
 `fzf`. Every test server uses its own explicit tmux socket.
 
-Use `bash ./history_finder.sh doctor` to verify local dependencies and resolved
+Use `./tnx doctor` to verify local dependencies and resolved
 configuration.
 
 ## Inspired by

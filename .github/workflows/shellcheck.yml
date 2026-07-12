@@ -16,8 +16,8 @@ jobs:
       - name: Run shellcheck
         run: |
           shellcheck -x --source-path=SCRIPTDIR \
-            history_finder.sh \
-            tmux_history_finder.tmux \
+            tnx \
+            tmux_nexus.tmux \
             scripts/*.sh \
             tests/*.sh
       - name: Run installer tests

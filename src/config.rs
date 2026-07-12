@@ -15,7 +15,7 @@ use crate::{
     types::{ActionKind, CaseMode, Scope, SearchMode},
 };
 
-const TMUX_OPTION_PREFIX: &str = "@tmux_history_finder_";
+const TMUX_OPTION_PREFIX: &str = "@tmux_nexus_";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -60,48 +60,48 @@ pub struct ConfigOverrides {
 impl Config {
     pub fn load(overrides: &ConfigOverrides) -> Result<Self> {
         let mut config = Self {
-            launch_key: setting("launch_key", "THF_LAUNCH_KEY")?.unwrap_or_else(|| "g".into()),
-            motion_key: setting("motion_key", "THF_MOTION_KEY")?.unwrap_or_else(|| "s".into()),
-            motion2_key: setting("motion2_key", "THF_MOTION2_KEY")?.unwrap_or_default(),
+            launch_key: setting("launch_key", "TNX_LAUNCH_KEY")?.unwrap_or_else(|| "g".into()),
+            motion_key: setting("motion_key", "TNX_MOTION_KEY")?.unwrap_or_else(|| "s".into()),
+            motion2_key: setting("motion2_key", "TNX_MOTION2_KEY")?.unwrap_or_default(),
             motion_copy_mode_no_prefix: bool_setting(
                 "motion_copy_mode_no_prefix",
-                "THF_MOTION_COPY_MODE_NO_PREFIX",
+                "TNX_MOTION_COPY_MODE_NO_PREFIX",
             )?
             .unwrap_or(false),
-            scope: parse_setting("scope", "THF_SCOPE")?.unwrap_or_default(),
-            include_history: bool_setting("include_history", "THF_INCLUDE_HISTORY")?
+            scope: parse_setting("scope", "TNX_SCOPE")?.unwrap_or_default(),
+            include_history: bool_setting("include_history", "TNX_INCLUDE_HISTORY")?
                 .unwrap_or(true),
-            history_lines: usize_setting("history_lines", "THF_HISTORY_LINES")?.and_then(nonzero),
-            case_mode: parse_setting("case", "THF_CASE")?.unwrap_or_default(),
-            join_wraps: bool_setting("join_wraps", "THF_JOIN_WRAPS")?.unwrap_or(true),
-            skip_blank: bool_setting("skip_blank", "THF_SKIP_BLANK")?.unwrap_or(true),
-            preview: bool_setting("preview", "THF_PREVIEW")?.unwrap_or(true),
-            prompt_query: bool_setting("prompt_query", "THF_PROMPT_QUERY")?.unwrap_or(false),
-            default_action: parse_setting("default_action", "THF_DEFAULT_ACTION")?
+            history_lines: usize_setting("history_lines", "TNX_HISTORY_LINES")?.and_then(nonzero),
+            case_mode: parse_setting("case", "TNX_CASE")?.unwrap_or_default(),
+            join_wraps: bool_setting("join_wraps", "TNX_JOIN_WRAPS")?.unwrap_or(true),
+            skip_blank: bool_setting("skip_blank", "TNX_SKIP_BLANK")?.unwrap_or(true),
+            preview: bool_setting("preview", "TNX_PREVIEW")?.unwrap_or(true),
+            prompt_query: bool_setting("prompt_query", "TNX_PROMPT_QUERY")?.unwrap_or(false),
+            default_action: parse_setting("default_action", "TNX_DEFAULT_ACTION")?
                 .unwrap_or_default(),
-            fzf_options: setting("fzf_options", "THF_FZF_OPTIONS")?.unwrap_or_default(),
+            fzf_options: setting("fzf_options", "TNX_FZF_OPTIONS")?.unwrap_or_default(),
             search_mode: SearchMode::Literal,
-            motion_hints: setting("motion_hints", "THF_MOTION_HINTS")?
+            motion_hints: setting("motion_hints", "TNX_MOTION_HINTS")?
                 .unwrap_or_else(|| "asdghklqwertyuiopzxcvbnmfj;".into()),
-            motion_case_mode: parse_setting("motion_case", "THF_MOTION_CASE")?
+            motion_case_mode: parse_setting("motion_case", "TNX_MOTION_CASE")?
                 .unwrap_or(CaseMode::Insensitive),
-            motion_smartsign: bool_setting("motion_smartsign", "THF_MOTION_SMARTSIGN")?
+            motion_smartsign: bool_setting("motion_smartsign", "TNX_MOTION_SMARTSIGN")?
                 .unwrap_or(false),
             motion_vertical_border: setting(
                 "motion_vertical_border",
-                "THF_MOTION_VERTICAL_BORDER",
+                "TNX_MOTION_VERTICAL_BORDER",
             )?
             .unwrap_or_else(|| "|".into()),
             motion_horizontal_border: setting(
                 "motion_horizontal_border",
-                "THF_MOTION_HORIZONTAL_BORDER",
+                "TNX_MOTION_HORIZONTAL_BORDER",
             )?
             .unwrap_or_else(|| "-".into()),
-            motion_hint1_fg: setting("motion_hint1_fg", "THF_MOTION_HINT1_FG")?
+            motion_hint1_fg: setting("motion_hint1_fg", "TNX_MOTION_HINT1_FG")?
                 .unwrap_or_else(|| "1;31".into()),
-            motion_hint2_fg: setting("motion_hint2_fg", "THF_MOTION_HINT2_FG")?
+            motion_hint2_fg: setting("motion_hint2_fg", "TNX_MOTION_HINT2_FG")?
                 .unwrap_or_else(|| "1;32".into()),
-            motion_dim: setting("motion_dim", "THF_MOTION_DIM")?.unwrap_or_else(|| "2".into()),
+            motion_dim: setting("motion_dim", "TNX_MOTION_DIM")?.unwrap_or_else(|| "2".into()),
         };
 
         if let Some(scope) = overrides.scope {
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn collect_tmux_options_strips_plugin_prefix() {
         let options = collect_tmux_options(vec![
-            ("@tmux_history_finder_scope".into(), "session".into()),
+            ("@tmux_nexus_scope".into(), "session".into()),
             ("@other_plugin_scope".into(), "all".into()),
         ]);
 
@@ -306,10 +306,10 @@ mod tests {
 
     #[test]
     fn reports_invalid_typed_settings() {
-        let error = parse_value::<Scope>("typo", "THF_SCOPE", "scope")
+        let error = parse_value::<Scope>("typo", "TNX_SCOPE", "scope")
             .expect_err("invalid scope should fail")
             .to_string();
-        assert!(error.contains("THF_SCOPE"));
+        assert!(error.contains("TNX_SCOPE"));
         assert!(error.contains("typo"));
     }
 }

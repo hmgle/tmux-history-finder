@@ -106,12 +106,12 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
         (panes, matches)
     };
     if panes.is_empty() {
-        tmux::display_message("tmux-history-finder motion: no visible panes");
+        tmux::display_message("tmux-nexus motion: no visible panes");
         return Ok(());
     }
 
     if matches.is_empty() {
-        tmux::display_message("tmux-history-finder motion: no match");
+        tmux::display_message("tmux-nexus motion: no match");
         return Ok(());
     }
     if matches.len() == 1 {
@@ -125,7 +125,7 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
     }
     if !args.overlay {
         let snapshot_file = Builder::new()
-            .prefix("thf_motion.")
+            .prefix("tnx_motion.")
             .suffix(".json")
             .tempfile()?;
         MotionSnapshot {
@@ -154,7 +154,7 @@ pub fn run(args: MotionArgs, config: &Config) -> Result<()> {
     let positions = hint_positions(&panes, &hint_mapping, motion_config.tab_mode);
 
     if positions.is_empty() {
-        tmux::display_message("tmux-history-finder motion: no drawable hints");
+        tmux::display_message("tmux-nexus motion: no drawable hints");
         return Ok(());
     }
 

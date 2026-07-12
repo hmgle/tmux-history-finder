@@ -124,10 +124,10 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
 
 impl ManagerConfig {
     fn load() -> Result<Self> {
-        let options: HashMap<String, String> = tmux::show_options("@tmux_history_finder_manager_")?
+        let options: HashMap<String, String> = tmux::show_options("@tmux_nexus_manager_")?
             .into_iter()
             .filter_map(|(name, value)| {
-                name.strip_prefix("@tmux_history_finder_manager_")
+                name.strip_prefix("@tmux_nexus_manager_")
                     .map(|key| (key.to_string(), value))
             })
             .collect();
@@ -145,7 +145,7 @@ impl ManagerConfig {
                     .with_context(|| format!("invalid manager setting {env_name}/manager_{name}")),
             }
         };
-        let mut order: Vec<String> = get("order", "THF_MANAGER_ORDER", "TMUX_FZF_ORDER")
+        let mut order: Vec<String> = get("order", "TNX_MANAGER_ORDER", "TMUX_FZF_ORDER")
             .unwrap_or_else(|| {
                 "history|copy-mode|session|window|pane|command|keybinding|clipboard|process".into()
             })
@@ -154,10 +154,10 @@ impl ManagerConfig {
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
             .collect();
-        let menu = get("menu", "THF_MANAGER_MENU", "TMUX_FZF_MENU");
-        let key = env::var("THF_MANAGER_KEY")
+        let menu = get("menu", "TNX_MANAGER_MENU", "TMUX_FZF_MENU");
+        let key = env::var("TNX_MANAGER_KEY")
             .ok()
-            .or_else(|| tmux::show_option_allow_empty("@tmux_history_finder_manager_key"))
+            .or_else(|| tmux::show_option_allow_empty("@tmux_nexus_manager_key"))
             .or_else(|| env::var("TMUX_FZF_LAUNCH_KEY").ok())
             .unwrap_or_else(|| "F".into());
         if menu.is_some() && !order.iter().any(|item| item == "menu") {
@@ -166,58 +166,58 @@ impl ManagerConfig {
         Ok(Self {
             key,
             order,
-            fzf_options: get("fzf_options", "THF_MANAGER_FZF_OPTIONS", "TMUX_FZF_OPTIONS")
+            fzf_options: get("fzf_options", "TNX_MANAGER_FZF_OPTIONS", "TMUX_FZF_OPTIONS")
                 .unwrap_or_else(|| "-p -w 62% -h 38%".into()),
-            preview: boolean("preview", "THF_MANAGER_PREVIEW", "TMUX_FZF_PREVIEW", true)?,
+            preview: boolean("preview", "TNX_MANAGER_PREVIEW", "TMUX_FZF_PREVIEW", true)?,
             preview_follow: boolean(
                 "preview_follow",
-                "THF_MANAGER_PREVIEW_FOLLOW",
+                "TNX_MANAGER_PREVIEW_FOLLOW",
                 "TMUX_FZF_PREVIEW_FOLLOW",
                 true,
             )?,
-            confirm: boolean("confirm", "THF_MANAGER_CONFIRM", "", true)?,
+            confirm: boolean("confirm", "TNX_MANAGER_CONFIRM", "", true)?,
             switch_current: boolean(
                 "switch_current",
-                "THF_MANAGER_SWITCH_CURRENT",
+                "TNX_MANAGER_SWITCH_CURRENT",
                 "TMUX_FZF_SWITCH_CURRENT",
                 false,
             )?,
             session_format: get(
                 "session_format",
-                "THF_MANAGER_SESSION_FORMAT",
+                "TNX_MANAGER_SESSION_FORMAT",
                 "TMUX_FZF_SESSION_FORMAT",
             ),
             window_format: get(
                 "window_format",
-                "THF_MANAGER_WINDOW_FORMAT",
+                "TNX_MANAGER_WINDOW_FORMAT",
                 "TMUX_FZF_WINDOW_FORMAT",
             ),
             pane_format: get(
                 "pane_format",
-                "THF_MANAGER_PANE_FORMAT",
+                "TNX_MANAGER_PANE_FORMAT",
                 "TMUX_FZF_PANE_FORMAT",
             ),
             window_filter: get(
                 "window_filter",
-                "THF_MANAGER_WINDOW_FILTER",
+                "TNX_MANAGER_WINDOW_FILTER",
                 "TMUX_FZF_WINDOW_FILTER",
             ),
             menu,
             menu_popup: boolean(
                 "menu_popup",
-                "THF_MANAGER_MENU_POPUP",
+                "TNX_MANAGER_MENU_POPUP",
                 "TMUX_FZF_MENU_POPUP",
                 false,
             )?,
             menu_popup_width: get(
                 "menu_popup_width",
-                "THF_MANAGER_MENU_POPUP_WIDTH",
+                "TNX_MANAGER_MENU_POPUP_WIDTH",
                 "TMUX_FZF_MENU_POPUP_WIDTH",
             )
             .unwrap_or_else(|| "50%".into()),
             menu_popup_height: get(
                 "menu_popup_height",
-                "THF_MANAGER_MENU_POPUP_HEIGHT",
+                "TNX_MANAGER_MENU_POPUP_HEIGHT",
                 "TMUX_FZF_MENU_POPUP_HEIGHT",
             )
             .unwrap_or_else(|| "50%".into()),
@@ -857,7 +857,7 @@ fn copyq_count() -> Result<usize> {
 }
 
 fn paste_bytes(content: &[u8]) -> Result<()> {
-    let name = format!("thf-{}", std::process::id());
+    let name = format!("tnx-{}", std::process::id());
     let client = tmux::TmuxClient::from_env()?;
     client.run_with_input(["load-buffer", "-b", name.as_str(), "-"], content)?;
     let result = client.run(["paste-buffer", "-b", name.as_str()]);
@@ -1019,7 +1019,7 @@ fn popup_or_split(command: &str, width: &str, height: &str) -> Result<()> {
 
 fn run_menu(config: &ManagerConfig) -> Result<()> {
     let Some(raw) = config.menu.as_deref() else {
-        tmux::display_message("tmux-history-finder: manager menu is not configured");
+        tmux::display_message("tmux-nexus: manager menu is not configured");
         return Ok(());
     };
     let entries = parse_menu(raw)?;
@@ -1222,7 +1222,7 @@ fn choose(
     preview_kind: Option<&str>,
 ) -> Result<Vec<usize>> {
     if rows.is_empty() {
-        tmux::display_message("tmux-history-finder: no manager items available");
+        tmux::display_message("tmux-nexus: no manager items available");
         return Ok(Vec::new());
     }
     let mut data = NamedTempFile::new()?;

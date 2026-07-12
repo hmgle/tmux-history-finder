@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] - 2026-07-12
 
 ### Added
+- Renamed the project to `tmux-nexus`, the CLI and release binary to `tnx`,
+  configuration variables to `TNX_*`, and tmux options to `@tmux_nexus_*` to
+  reflect the expanded search, motion, and workspace-management scope.
 - Added a `Prefix+F` workspace manager covering tmux-fzf session, window,
   pane, copy-mode, command, keybinding, clipboard, process, preview, multi-select,
   and user-menu workflows.
-- Added `history_finder.sh manage [category] [action]` for direct bindings and
-  `@tmux_history_finder_manager_*` / `THF_MANAGER_*` configuration.
+- Added `tnx manage [category] [action]` for direct bindings and
+  `@tmux_nexus_manager_*` / `TNX_MANAGER_*` configuration.
 - Added compatibility fallbacks for the corresponding `TMUX_FZF_*` variables.
 - Added an empty manager key setting to disable the default `Prefix+F` binding.
 - Added CopyQ clipboard history, tmux-buffer fallback, process signals, popup
@@ -54,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0] - 2026-07-11
 
 ### Added
-- `@tmux_history_finder_pane_key` can bind a prefix key to current-pane search
+- `@tmux_nexus_pane_key` can bind a prefix key to current-pane search
   without hard-coding the plugin installation path.
 
 ## [0.5.0] - 2026-07-10
@@ -62,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Visible-pane motion mode can now jump to matching text in the current tmux
   window with easymotion-style hints. `Prefix+s` starts one-character motion,
-  and `@tmux_history_finder_motion2_key` can enable two-character motion.
+  and `@tmux_nexus_motion2_key` can enable two-character motion.
 - Isolated tmux integration coverage now exercises visible-only duplicate
   jumps, limited history, wrapped lines, disappearing panes, and cross-pane
   motion navigation.
@@ -108,7 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.1] - 2026-06-22
 
 ### Changed
-- Loading configuration now reads all `@tmux_history_finder_*` tmux options in
+- Loading configuration now reads all `@tmux_nexus_*` tmux options in
   one call and reuses the result, avoiding repeated `show-option` calls after
   config import.
 - Legacy capture output is now streamed directly from captured pane text instead
@@ -125,9 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-06-22
 
 ### Added
-- `history_lines` / `THF_HISTORY_LINES` and `--history-lines` can now limit how
+- `history_lines` / `TNX_HISTORY_LINES` and `--history-lines` can now limit how
   much scrollback is captured from each pane.
-- `prompt_query` / `THF_PROMPT_QUERY` can make the tmux binding ask for a query
+- `prompt_query` / `TNX_PROMPT_QUERY` can make the tmux binding ask for a query
   before capturing pane history; empty input cancels without indexing panes.
 
 ### Changed
@@ -135,7 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation when opening the picker without an initial query.
 
 ### Fixed
-- Documented `bash ./history_finder.sh` as the standalone CLI entry point
+- Documented `bash ./tnx` as the standalone CLI entry point
   instead of the non-existent `history-finder` command.
 - `history_lines` now preserves the omitted scrollback offset so jump actions
   still target the selected line after a limited capture.
@@ -160,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.0] - 2026-06-21
 
 ### Changed
-- Reworked the implementation around a Rust `thf` backend. The tmux plugin file
+- Reworked the implementation around a Rust `tnx` backend. The tmux plugin file
   and legacy shell paths remain as compatibility wrappers, but capture, search,
   preview, and actions now run through structured Rust code.
 - Capture now runs panes in parallel and stores one structured pane snapshot per
@@ -170,36 +173,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regular expressions, with smart/sensitive/insensitive case handling.
 
 ### Added
-- `thf doctor` / `bash ./history_finder.sh doctor` diagnostics for tmux, fzf,
+- `tnx doctor` / `bash ./tnx doctor` diagnostics for tmux, fzf,
   fzf-tmux, ripgrep, clipboard support, and resolved configuration.
 - fzf action shortcuts: `Ctrl-y` copy, `Ctrl-s` send, and `Ctrl-p` print, while
   `Enter` continues to use the configured default action.
 - Rust CI coverage for formatting, unit tests, and build verification.
-- Prebuilt `thf` binaries published to GitHub Releases (Linux/macOS, x86_64 and
+- Prebuilt `tnx` binaries published to GitHub Releases (Linux/macOS, x86_64 and
   aarch64) via a tag-triggered `release` workflow.
 - `scripts/install-binary.sh` downloads and checksum-verifies the prebuilt binary
-  for the current platform into `bin/thf`. `history_finder.sh` calls it
+  for the current platform into `bin/tnx`. `tnx` calls it
   automatically when no Rust toolchain is available, so TPM installs work without
-  `cargo`. Opt out with `THF_AUTO_DOWNLOAD=0`, or point `THF_BIN` at your own
+  `cargo`. Opt out with `TNX_AUTO_DOWNLOAD=0`, or point `TNX_BIN` at your own
   binary.
 
 ## [0.2.0] - 2026-06-20
 
 ### Fixed
-- `@tmux_history_finder_*` options are now honoured by the key binding (and the
+- `@tmux_nexus_*` options are now honoured by the key binding (and the
   CLI). They were previously exported from the transient plugin-load shell and
   lost before the picker ran, so only `launch_key` ever took effect. All options
   are now resolved at run time in `scripts/utils.sh`.
 - `--case sensitive` with the ripgrep backend no longer mis-parses its flags. It
   used to emit a stray `-- ` that made `rg` treat the query as a filename and
   match the literal `--` instead, also corrupting the TAB record format.
-- The `preview` option (`@tmux_history_finder_preview` / `THF_PREVIEW`) is now
+- The `preview` option (`@tmux_nexus_preview` / `TNX_PREVIEW`) is now
   respected; the preview was previously always shown.
 - `--print` with a query now runs fully non-interactively (no picker), matching
   its documented "scriptable, no UI" behaviour; it previously still launched fzf.
 - The first-load notice now actually fires once. Its guard tested the exit
   status of `show-option -gqv`, which always succeeds, so the message (and the
-  `@thf_loaded` marker) never appeared; it now tests the option's value.
+  `@tnx_loaded` marker) never appeared; it now tests the option's value.
 
 ### Changed
 - The fzf preview caches each pane's capture for the picker's lifetime instead
@@ -209,11 +212,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   features are used; works with the macOS system bash).
 
 ### Added
-- `bash ./history_finder.sh --version` / `bash ./history_finder.sh -V`.
+- `bash ./tnx --version` / `bash ./tnx -V`.
 
 ### Removed
-- Unused internal helpers (`thf_tmux_socket_args`, `thf_fzf_bin`,
-  `thf_tmux_quote`) and a dead smart-case placeholder.
+- Unused internal helpers (`tnx_tmux_socket_args`, `tnx_fzf_bin`,
+  `tnx_tmux_quote`) and a dead smart-case placeholder.
 
 ## [0.1.0] - 2026-06-20
 
@@ -229,8 +232,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pre-filtering backend selection (`auto` / `rg` / `grep`) with smart-case
   support, so large histories stay responsive.
 - TPM plugin entry point with a configurable launch key, plus a standalone
-  `history_finder.sh` CLI wrapper.
-- Full configuration via either tmux `@tmux_history_finder_*` options or `THF_*`
+  `tnx` CLI wrapper.
+- Full configuration via either tmux `@tmux_nexus_*` options or `TNX_*`
   environment variables.
 
 ### Notes

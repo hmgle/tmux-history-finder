@@ -14,7 +14,7 @@ mod util;
 
 fn main() {
     if let Err(err) = cli::run() {
-        eprintln!("tmux-history-finder: {err:#}");
+        eprintln!("tmux-nexus: {err:#}");
         std::process::exit(1);
     }
 }

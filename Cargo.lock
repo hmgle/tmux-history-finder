@@ -397,7 +397,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tmux-history-finder"
+name = "tmux-nexus"
 version = "0.7.0"
 dependencies = [
  "anyhow",

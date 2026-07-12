@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/thf-installer-test.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tnx-installer-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 case "$(uname -s)" in
@@ -17,17 +17,17 @@ case "$(uname -m)" in
     *) echo "installer test: unsupported architecture" >&2; exit 77 ;;
 esac
 target="${arch_part}-${os_part}"
-asset="thf-${target}.tar.gz"
+asset="tnx-${target}.tar.gz"
 
 repo="$TMP/repo"
 assets="$TMP/assets"
-dist="$TMP/thf-${target}"
+dist="$TMP/tnx-${target}"
 mkdir -p "$repo/scripts" "$assets" "$dist"
 cp "$ROOT/Cargo.toml" "$repo/Cargo.toml"
 cp "$ROOT/scripts/install-binary.sh" "$repo/scripts/install-binary.sh"
-printf '%s\n' '#!/bin/sh' 'echo "tmux-history-finder 0.5.0"' > "$dist/thf"
-chmod +x "$dist/thf"
-tar -czf "$assets/$asset" -C "$TMP" "thf-${target}"
+printf '%s\n' '#!/bin/sh' 'echo "tnx 0.5.0"' > "$dist/tnx"
+chmod +x "$dist/tnx"
+tar -czf "$assets/$asset" -C "$TMP" "tnx-${target}"
 if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$assets/$asset" > "$assets/$asset.sha256"
 else
@@ -35,24 +35,24 @@ else
 fi
 
 install_env=(
-    THF_VERSION=0.5.0
-    THF_BASE_URL="file://$assets"
-    THF_INSTALL_LOCK_ATTEMPTS=10
+    TNX_VERSION=0.5.0
+    TNX_BASE_URL="file://$assets"
+    TNX_INSTALL_LOCK_ATTEMPTS=10
 )
 
 env "${install_env[@]}" bash "$repo/scripts/install-binary.sh" --force >/dev/null
-[ "$("$repo/bin/thf" --version)" = "tmux-history-finder 0.5.0" ]
+[ "$("$repo/bin/tnx" --version)" = "tnx 0.5.0" ]
 
-rm -f "$repo/bin/thf"
+rm -f "$repo/bin/tnx"
 env "${install_env[@]}" bash "$repo/scripts/install-binary.sh" --force >/dev/null &
 first=$!
 env "${install_env[@]}" bash "$repo/scripts/install-binary.sh" --force >/dev/null &
 second=$!
 wait "$first"
 wait "$second"
-[ "$("$repo/bin/thf" --version)" = "tmux-history-finder 0.5.0" ]
+[ "$("$repo/bin/tnx" --version)" = "tnx 0.5.0" ]
 
-rm -f "$repo/bin/thf" "$assets/$asset.sha256"
+rm -f "$repo/bin/tnx" "$assets/$asset.sha256"
 if env "${install_env[@]}" bash "$repo/scripts/install-binary.sh" --force >/dev/null 2>&1; then
     echo "installer test: missing checksum unexpectedly succeeded" >&2
     exit 1
@@ -60,7 +60,7 @@ fi
 
 mkdir -p "$repo/bin"
 chmod 500 "$repo/bin"
-if env "${install_env[@]}" THF_INSTALL_LOCK_ATTEMPTS=1 \
+if env "${install_env[@]}" TNX_INSTALL_LOCK_ATTEMPTS=1 \
     bash "$repo/scripts/install-binary.sh" --force >/dev/null 2>&1; then
     chmod 700 "$repo/bin"
     echo "installer test: unwritable destination unexpectedly succeeded" >&2

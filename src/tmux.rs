@@ -211,7 +211,7 @@ fn display_args(args: &[OsString]) -> String {
 }
 
 fn tmux_args_from_env() -> Result<Vec<OsString>> {
-    let Some(raw) = std::env::var_os("THF_TMUX_ARGS") else {
+    let Some(raw) = std::env::var_os("TNX_TMUX_ARGS") else {
         return Ok(Vec::new());
     };
     let raw = raw.to_string_lossy();
@@ -219,7 +219,7 @@ fn tmux_args_from_env() -> Result<Vec<OsString>> {
         return Ok(Vec::new());
     }
     shell_words::split(&raw)
-        .context("failed to parse THF_TMUX_ARGS")
+        .context("failed to parse TNX_TMUX_ARGS")
         .map(|parts| parts.into_iter().map(OsString::from).collect())
 }
 
@@ -340,19 +340,16 @@ mod tests {
     #[test]
     fn parses_unquoted_tmux_option() {
         assert_eq!(
-            parse_show_option_line("@tmux_history_finder_scope all"),
-            Some(("@tmux_history_finder_scope".into(), "all".into()))
+            parse_show_option_line("@tmux_nexus_scope all"),
+            Some(("@tmux_nexus_scope".into(), "all".into()))
         );
     }
 
     #[test]
     fn parses_quoted_tmux_option() {
         assert_eq!(
-            parse_show_option_line("@tmux_history_finder_fzf_options \"--height 80%\""),
-            Some((
-                "@tmux_history_finder_fzf_options".into(),
-                "--height 80%".into()
-            ))
+            parse_show_option_line("@tmux_nexus_fzf_options \"--height 80%\""),
+            Some(("@tmux_nexus_fzf_options".into(), "--height 80%".into()))
         );
     }
 }

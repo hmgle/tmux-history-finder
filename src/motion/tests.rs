@@ -48,7 +48,7 @@ impl TestTmux {
         assert!(tmux::have("tmux"), "tmux is required for integration tests");
 
         let socket = format!(
-            "thf-motion-test-{}-{}",
+            "tnx-motion-test-{}-{}",
             std::process::id(),
             NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
         );
@@ -485,7 +485,7 @@ fn popup_command_targets_originating_client() {
     };
 
     let command = popup_command(
-        "/tmp/thf binary",
+        "/tmp/tnx binary",
         &args,
         "a'b",
         "@1",
@@ -503,7 +503,7 @@ fn popup_command_targets_originating_client() {
     assert!(!command[..command.len() - 1].contains(&"@1".to_string()));
     assert!(!command.iter().any(|part| part == "new-window"));
     let shell_command = command.last().expect("popup shell command");
-    assert!(shell_command.contains("'/tmp/thf binary'"));
+    assert!(shell_command.contains("'/tmp/tnx binary'"));
     assert!(shell_command.contains("--query 'a'\"'\"'b'"));
     assert!(shell_command.contains("--target-window @1"));
     assert!(shell_command.contains("--target-client /dev/pts/1"));

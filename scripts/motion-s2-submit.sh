@@ -12,8 +12,8 @@ if [ -z "$client_pid" ] || [ -z "$target_window" ]; then
     exit 0
 fi
 
-query_option="@tmux_history_finder_motion_query_$client_pid"
-second_option="@tmux_history_finder_motion_query_second_$client_pid"
+query_option="@tmux_nexus_motion_query_$client_pid"
+second_option="@tmux_nexus_motion_query_second_$client_pid"
 first=$(tmux show-option -gqv "$query_option" 2>/dev/null)
 second=$(tmux show-option -gqv "$second_option" 2>/dev/null)
 
