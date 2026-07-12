@@ -12,7 +12,7 @@ use tempfile::Builder;
 use crate::{
     action, capture,
     config::{Config, ConfigOverrides},
-    fzf, index, motion, preview, search, tmux,
+    fzf, index, manage, motion, preview, search, tmux,
     types::{ActionKind, CaseMode, Scope, SearchMode},
 };
 
@@ -34,6 +34,9 @@ enum Command {
     Preview(PreviewArgs),
     Action(ActionArgs),
     Motion(motion::MotionArgs),
+    Manage(manage::ManageArgs),
+    #[command(hide = true)]
+    ManagePreview(manage::PreviewArgs),
     Doctor,
 }
 
@@ -187,6 +190,8 @@ pub fn run() -> Result<()> {
         Command::Preview(args) => run_preview(args),
         Command::Action(args) => run_action(args),
         Command::Motion(args) => run_motion(args),
+        Command::Manage(args) => manage::run(args),
+        Command::ManagePreview(args) => manage::preview(args),
         Command::Doctor => run_doctor(),
     }
 }
@@ -201,7 +206,15 @@ fn normalize_args() -> Vec<OsString> {
     let first = args[1].to_string_lossy();
     let known = matches!(
         first.as_ref(),
-        "search" | "capture" | "preview" | "action" | "motion" | "doctor" | "help"
+        "search"
+            | "capture"
+            | "preview"
+            | "action"
+            | "motion"
+            | "manage"
+            | "manage-preview"
+            | "doctor"
+            | "help"
     );
     let root_flag = matches!(first.as_ref(), "-h" | "--help" | "-V" | "--version");
     if !known && !root_flag {
@@ -355,6 +368,7 @@ fn run_doctor() -> Result<()> {
         config.motion_smartsign,
         config.motion_copy_mode_no_prefix
     );
+    println!("manager: {}", manage::doctor_summary()?);
     Ok(())
 }
 

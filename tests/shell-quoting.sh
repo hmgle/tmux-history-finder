@@ -36,12 +36,15 @@ bindings="$("$REAL_TMUX" -L "$SOCKET" list-keys -T prefix)"
 search_binding="$(printf '%s\n' "$bindings" | grep -E 'prefix[[:space:]]+g[[:space:]].*history_finder.sh search')"
 pane_binding="$(printf '%s\n' "$bindings" | grep -E 'prefix[[:space:]]+/[[:space:]].*history_finder.sh search --scope pane')"
 motion_binding="$(printf '%s\n' "$bindings" | grep -E 'prefix[[:space:]]+s[[:space:]].*motion-s.sh')"
+manager_binding="$(printf '%s\n' "$bindings" | grep -E 'prefix[[:space:]]+F[[:space:]].*history_finder.sh manage')"
 printf '%s\n' "$search_binding" | grep -Fq 'plugin\\ space'
 printf '%s\n' "$search_binding" | grep -Fq 'quote/history_finder.sh search'
 printf '%s\n' "$pane_binding" | grep -Fq 'plugin\\ space'
 printf '%s\n' "$pane_binding" | grep -Fq 'quote/history_finder.sh search --scope pane'
 printf '%s\n' "$motion_binding" | grep -Fq 'plugin\\ space'
 printf '%s\n' "$motion_binding" | grep -Fq 'quote/scripts/motion-s.sh'
+printf '%s\n' "$manager_binding" | grep -Fq 'plugin\\ space'
+printf '%s\n' "$manager_binding" | grep -Fq 'quote/history_finder.sh manage'
 
 command_path="$TMP/command space'quote"
 cat > "$command_path" <<'EOF'

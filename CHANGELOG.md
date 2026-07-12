@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-12
+
+### Added
+- Added a `Prefix+F` workspace manager covering tmux-fzf session, window,
+  pane, copy-mode, command, keybinding, clipboard, process, preview, multi-select,
+  and user-menu workflows.
+- Added `history_finder.sh manage [category] [action]` for direct bindings and
+  `@tmux_history_finder_manager_*` / `THF_MANAGER_*` configuration.
+- Added compatibility fallbacks for the corresponding `TMUX_FZF_*` variables.
+- Added CopyQ clipboard history, tmux-buffer fallback, process signals, popup
+  process inspection, and default confirmation for destructive actions.
+
+### Changed
+- Manager selections use hidden tmux object IDs rather than parsing formatted
+  display text, making custom formats and special characters safe.
+
+### Tests
+- Added isolated manager integration coverage for pane switching, copy mode,
+  buffers, key bindings, user menus, and process signalling.
+
 ### Changed
 - Motion capture now starts visible-pane `capture-pane` processes concurrently
   and retains their original pane ordering when collecting output.

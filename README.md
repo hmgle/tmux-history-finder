@@ -21,6 +21,8 @@ on-screen hints.
   toolchain is required to use the plugin; install one only to build from source.
 - Optional: `fzf-tmux` for popup rendering, `rg` for user workflows, and one
   clipboard helper (`pbcopy`, `wl-copy`, `xclip`, `xsel`, or `clip.exe`).
+- Optional manager integrations: `copyq` for system clipboard history and
+  `pstree` for process trees. Without CopyQ, the manager uses tmux buffers.
 
 ## Install
 
@@ -106,6 +108,9 @@ bash ./history_finder.sh --print panic         # non-interactive print
 bash ./history_finder.sh --regex 'error|panic' # regex search
 bash ./history_finder.sh motion s a            # visible-pane 1-char jump
 bash ./history_finder.sh motion s2 he          # visible-pane 2-char jump
+bash ./history_finder.sh manage                # full tmux workspace manager
+bash ./history_finder.sh manage pane switch    # direct pane switcher
+bash ./history_finder.sh manage clipboard      # CopyQ/tmux buffer history
 bash ./history_finder.sh doctor                # dependency/config diagnostics
 ```
 
@@ -130,6 +135,25 @@ Motion mode:
 The two-character binding is disabled by default. Set
 `@tmux_history_finder_motion2_key` to enable it.
 
+Workspace manager:
+
+| Category | Actions |
+| --- | --- |
+| `session` | switch, new, rename, detach, kill |
+| `window` | switch, link, move, swap, rename, unlink/kill |
+| `pane` | switch, break, join, swap, layout, kill, resize |
+| `copy-mode` | select and execute copy-mode commands |
+| `command` | insert a tmux command into `command-prompt` |
+| `keybinding` | inspect and execute a configured key binding |
+| `clipboard` | preview and paste CopyQ history or tmux buffers |
+| `process` | top, pstree, TERM, KILL, INT, CONT, STOP, QUIT, HUP |
+| `menu` | execute user-defined commands, optionally in a popup |
+
+`Prefix+F` opens the manager. Destructive actions require confirmation by
+default. TAB selects multiple targets for detach, kill, join, clipboard paste,
+and process signals. Object actions use hidden tmux IDs, so custom formats may
+contain spaces, colons, quotes, and duplicate display text safely.
+
 ## Configuration
 
 Set options in tmux:
@@ -144,6 +168,9 @@ set -g @tmux_history_finder_history_lines "0"
 set -g @tmux_history_finder_motion_key "s"
 set -g @tmux_history_finder_motion2_key "S"
 set -g @tmux_history_finder_motion_hints "asdghklqwertyuiopzxcvbnmfj;"
+set -g @tmux_history_finder_manager_key "F"
+set -g @tmux_history_finder_manager_fzf_options "-p -w 62% -h 38% -m"
+set -g @tmux_history_finder_manager_confirm "1"
 ```
 
 Or use environment variables:
@@ -180,6 +207,54 @@ Supported values:
 | `motion_hint1_fg` / `THF_MOTION_HINT1_FG`                       | `1;31`                        | SGR color for the first hint character                  |
 | `motion_hint2_fg` / `THF_MOTION_HINT2_FG`                       | `1;32`                        | SGR color for the second hint character                 |
 | `motion_dim` / `THF_MOTION_DIM`                                 | `2`                           | SGR color for dimmed pane borders                       |
+
+Manager settings use `@tmux_history_finder_manager_*` tmux options or
+`THF_MANAGER_*` environment variables:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `key` | `F` | tmux prefix binding |
+| `order` | `history|copy-mode|session|window|pane|command|keybinding|clipboard|process` | category order and visibility |
+| `fzf_options` | `-p -w 62% -h 38%` | fzf-tmux popup/layout options |
+| `preview`, `preview_follow` | `1`, `1` | preview visibility and follow mode |
+| `confirm` | `1` | confirm destructive actions |
+| `switch_current` | `0` | include the current object in switch lists |
+| `session_format`, `window_format`, `pane_format` | tmux-aware defaults | custom list formats |
+| `window_filter` | empty | tmux `list-windows -f` filter |
+| `menu` | empty | legacy-compatible label/command pairs |
+| `menu_popup` | `0` | run menu commands in a popup |
+| `menu_popup_width`, `menu_popup_height` | `50%`, `50%` | menu popup size |
+
+For migration, the manager also reads the corresponding `TMUX_FZF_*`
+variables when no new setting is present. The precedence is `THF_MANAGER_*`,
+tmux option, legacy `TMUX_FZF_*`, then the default.
+
+Menu entries use the tmux-fzf-compatible format:
+
+```tmux
+set -g @tmux_history_finder_manager_menu "foo\necho Hello\n\nstatus\ntmux display-message ready\n"
+```
+
+Direct bindings do not need compatibility scripts:
+
+```tmux
+bind-key f run-shell -b "~/.tmux/plugins/tmux-history-finder/history_finder.sh manage pane switch"
+bind-key y run-shell -b "~/.tmux/plugins/tmux-history-finder/history_finder.sh manage clipboard"
+```
+
+### Migrating from sainnhe/tmux-fzf
+
+Remove `set -g @plugin 'sainnhe/tmux-fzf'`, keep the manager binding at its
+default `Prefix+F`, and translate persistent configuration as follows:
+
+```tmux
+set -g @tmux_history_finder_manager_fzf_options "-p -w 86% -h 58% -m"
+set -g @tmux_history_finder_manager_pane_format \
+  "#{b:pane_current_path} #{=/-26/...:#{d:pane_current_path}} [#{pane_current_command}]"
+```
+
+Legacy environment variables remain supported, but the tmux options above are
+preferred for new configurations.
 
 CLI flags override configuration for that run.
 
@@ -228,6 +303,7 @@ shellcheck -x --source-path=SCRIPTDIR \
 bash tests/install-binary.sh
 env -u TMUX -u TMUX_PANE bash tests/shell-quoting.sh
 env -u TMUX -u TMUX_PANE bash tests/tmux-integration.sh
+env -u TMUX -u TMUX_PANE bash tests/manage-integration.sh
 ```
 
 The tmux integration tests require `tmux`; picker workflows and CI also require

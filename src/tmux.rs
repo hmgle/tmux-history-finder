@@ -145,6 +145,33 @@ impl TmuxClient {
         Ok(())
     }
 
+    pub fn run_with_input<I, S>(&self, args: I, input: &[u8]) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let args: Vec<OsString> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect();
+        let mut child = self
+            .command()
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to execute tmux {}", display_args(&args)))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(input)?;
+        }
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Ok(())
+    }
+
     /// Run an ordered tmux command sequence through one client process.
     pub fn run_commands(&self, commands: &[Vec<OsString>]) -> Result<()> {
         let mut args = Vec::new();
