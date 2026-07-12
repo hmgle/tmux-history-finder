@@ -13,7 +13,10 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-use crate::{tmux, util::shell_quote};
+use crate::{
+    fzf, tmux,
+    util::{shell_quote, version_at_least},
+};
 
 const CATEGORIES: &[(&str, &str)] = &[
     ("history", "Search pane history"),
@@ -984,7 +987,7 @@ fn display_process(pid: u32) -> Result<()> {
 
 fn popup_or_split(command: &str, width: &str, height: &str) -> Result<()> {
     let version = tmux::command_version("tmux", &["-V"]).unwrap_or_default();
-    if version_at_least(&version, 3, 2) {
+    if version_at_least(&version, 3, 2, 0) {
         tmux::run([
             "display-popup",
             "-E",
@@ -1244,7 +1247,7 @@ fn choose(
             shell_quote(&data.path().to_string_lossy())
         );
         let fzf_version = tmux::command_version("fzf", &["--version"]).unwrap_or_default();
-        let follow = if config.preview_follow && version_at_least_patch(&fzf_version, 0, 24, 4) {
+        let follow = if config.preview_follow && version_at_least(&fzf_version, 0, 24, 4) {
             ":follow"
         } else {
             ""
@@ -1322,7 +1325,12 @@ fn picker_command(config: &ManagerConfig) -> Result<Command> {
     let parsed =
         shell_words::split(&config.fzf_options).context("failed to parse manager fzf options")?;
     let options = if use_tmux {
-        without_multi(parsed)
+        let options = without_multi(parsed);
+        if fzf::supports_popup() {
+            options
+        } else {
+            without_popup_options(options)
+        }
     } else {
         without_tmux_options(without_multi(parsed))
     };
@@ -1333,24 +1341,86 @@ fn picker_command(config: &ManagerConfig) -> Result<Command> {
 fn without_multi(options: Vec<String>) -> Vec<String> {
     options
         .into_iter()
-        .filter(|option| !matches!(option.as_str(), "-m" | "+m" | "--multi" | "--no-multi"))
+        .filter(|option| !is_multi_option(option))
         .collect()
 }
 
+fn is_multi_option(option: &str) -> bool {
+    if matches!(option, "-m" | "+m" | "--multi" | "--no-multi") || option.starts_with("--multi=") {
+        return true;
+    }
+    option
+        .strip_prefix("-m")
+        .is_some_and(|count| !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 fn without_tmux_options(options: Vec<String>) -> Vec<String> {
+    without_layout_options(options, true, false)
+}
+
+fn without_popup_options(options: Vec<String>) -> Vec<String> {
+    without_layout_options(options, false, true)
+}
+
+fn without_layout_options(
+    options: Vec<String>,
+    include_split: bool,
+    preserve_separator: bool,
+) -> Vec<String> {
     let mut result = Vec::new();
     let mut iter = options.into_iter();
     while let Some(option) = iter.next() {
-        if matches!(option.as_str(), "-p" | "--popup") {
-            continue;
+        if option == "--" {
+            if preserve_separator {
+                result.push(option);
+            }
+            result.extend(iter);
+            break;
         }
-        if matches!(option.as_str(), "-w" | "-h" | "-x" | "-y") {
-            let _ = iter.next();
+        if is_tmux_layout_option(&option, include_split) {
+            if tmux_layout_option_takes_value(&option)
+                && iter
+                    .as_slice()
+                    .first()
+                    .is_some_and(|value| is_tmux_layout_value(value))
+            {
+                let _ = iter.next();
+            }
             continue;
         }
         result.push(option);
     }
     result
+}
+
+fn is_tmux_layout_option(option: &str, include_split: bool) -> bool {
+    if option == "--popup" || option.starts_with("--popup=") {
+        return true;
+    }
+    let Some(flag) = option
+        .strip_prefix('-')
+        .and_then(|value| value.chars().next())
+    else {
+        return false;
+    };
+    matches!(flag, 'p' | 'w' | 'h' | 'x' | 'y')
+        || (include_split && matches!(flag, 'd' | 'u' | 'l' | 'r'))
+}
+
+fn tmux_layout_option_takes_value(option: &str) -> bool {
+    option == "--popup"
+        || matches!(
+            option,
+            "-p" | "-w" | "-h" | "-x" | "-y" | "-d" | "-u" | "-l" | "-r"
+        )
+}
+
+fn is_tmux_layout_value(value: &str) -> bool {
+    !value.is_empty()
+        && (value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'%' | b','))
+            || (value.len() == 1 && value.as_bytes()[0].is_ascii_uppercase()))
 }
 
 fn destructive_tmux(
@@ -1509,50 +1579,6 @@ fn ensure_program(program: &str, message: &str) -> Result<()> {
     }
 }
 
-fn version_at_least(value: &str, major: u64, minor: u64) -> bool {
-    let Some(version) = value
-        .split(|character: char| !(character.is_ascii_digit() || character == '.'))
-        .find(|part| part.contains('.'))
-    else {
-        return false;
-    };
-    let mut pieces = version.split('.');
-    let found_major = pieces
-        .next()
-        .and_then(|part| part.parse().ok())
-        .unwrap_or(0);
-    let found_minor = pieces
-        .next()
-        .and_then(|part| part.parse().ok())
-        .unwrap_or(0);
-    (found_major, found_minor) >= (major, minor)
-}
-
-fn version_at_least_patch(value: &str, major: u64, minor: u64, patch: u64) -> bool {
-    let Some(version) = value
-        .split(|character: char| !(character.is_ascii_digit() || character == '.'))
-        .find(|part| part.contains('.'))
-    else {
-        return false;
-    };
-    let mut pieces = version.split('.');
-    let found = (
-        pieces
-            .next()
-            .and_then(|part| part.parse().ok())
-            .unwrap_or(0),
-        pieces
-            .next()
-            .and_then(|part| part.parse().ok())
-            .unwrap_or(0),
-        pieces
-            .next()
-            .and_then(|part| part.parse().ok())
-            .unwrap_or(0),
-    );
-    found >= (major, minor, patch)
-}
-
 fn session_attached(session: &str) -> bool {
     tmux::try_stdout([
         "display-message",
@@ -1567,7 +1593,9 @@ fn session_attached(session: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bool, parse_menu, without_tmux_options};
+    use super::{
+        parse_bool, parse_menu, without_multi, without_popup_options, without_tmux_options,
+    };
 
     #[test]
     fn parses_legacy_menu() {
@@ -1586,9 +1614,41 @@ mod tests {
         assert_eq!(
             without_tmux_options(vec![
                 "-p".into(),
+                "80%,60%".into(),
+                "-w80%".into(),
+                "-d".into(),
+                "40%".into(),
+                "--".into(),
+                "--ansi".into()
+            ]),
+            vec!["--ansi"]
+        );
+    }
+
+    #[test]
+    fn keeps_split_options_when_popup_is_unsupported() {
+        assert_eq!(
+            without_popup_options(vec![
+                "-p80%,60%".into(),
                 "-w".into(),
                 "80%".into(),
-                "--ansi".into()
+                "-d".into(),
+                "40%".into(),
+                "--".into(),
+                "-p".into(),
+            ]),
+            vec!["-d", "40%", "--", "-p"]
+        );
+    }
+
+    #[test]
+    fn manager_controls_multi_selection() {
+        assert_eq!(
+            without_multi(vec![
+                "-m".into(),
+                "-m3".into(),
+                "--multi=4".into(),
+                "--ansi".into(),
             ]),
             vec!["--ansi"]
         );

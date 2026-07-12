@@ -7,7 +7,13 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::{config::Config, index::SearchIndex, tmux, types::ActionKind, util::shell_quote};
+use crate::{
+    config::Config,
+    index::SearchIndex,
+    tmux,
+    types::ActionKind,
+    util::{shell_quote, version_at_least},
+};
 
 pub struct PickerResult {
     pub action: ActionKind,
@@ -189,37 +195,17 @@ fn picker_exit(code: Option<i32>) -> PickerExit {
     }
 }
 
-fn supports_popup() -> bool {
+pub(crate) fn supports_popup() -> bool {
     let tmux_version = tmux::command_version("tmux", &["-V"]).unwrap_or_default();
     let fzf_version = tmux::command_version("fzf", &["--version"]).unwrap_or_default();
-    version_at_least(&tmux_version, 3, 2) && version_at_least(&fzf_version, 0, 23)
-}
-
-fn version_at_least(value: &str, major: u64, minor: u64) -> bool {
-    let Some((found_major, found_minor)) = first_major_minor(value) else {
-        return false;
-    };
-    (found_major, found_minor) >= (major, minor)
-}
-
-fn first_major_minor(value: &str) -> Option<(u64, u64)> {
-    let mut digits = value
-        .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
-        .filter(|part| !part.is_empty());
-    if let Some(part) = digits.by_ref().next() {
-        let mut pieces = part.split('.');
-        let major = pieces.next()?.parse().ok()?;
-        let minor = pieces.next().unwrap_or("0").parse().ok()?;
-        return Some((major, minor));
-    }
-    None
+    version_at_least(&tmux_version, 3, 2, 0) && version_at_least(&fzf_version, 0, 23, 0)
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{picker_args, picker_exit, sanitize_field, version_at_least, PickerExit};
+    use super::{picker_args, picker_exit, sanitize_field, PickerExit};
     use crate::{
         config::Config,
         types::{ActionKind, CaseMode, Scope, SearchMode},
@@ -251,13 +237,6 @@ mod tests {
             motion_hint2_fg: "1;32".into(),
             motion_dim: "2".into(),
         }
-    }
-
-    #[test]
-    fn parses_versions() {
-        assert!(version_at_least("tmux 3.3a", 3, 2));
-        assert!(version_at_least("0.60.0 (abc)", 0, 23));
-        assert!(!version_at_least("tmux 3.1", 3, 2));
     }
 
     #[test]
