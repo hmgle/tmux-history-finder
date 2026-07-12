@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-12
+
+### Changed
+- Manager workflows cache fzf/tmux capability probes and preserve typed
+  workspace listings, reducing repeated subprocess calls while keeping actions
+  tied to the objects shown by the picker.
+- Explicit `tnx manage history` launches skip manager-only picker setup, and
+  multi-buffer pastes are sent through one ordered tmux invocation.
+- Manager clipboard, process, and workspace adapters are split into focused
+  modules to keep their system interactions isolated.
+
+### Fixed
+- Process signals revalidate numeric UID and process start identity before
+  delivery. Linux uses process start ticks and pidfds to close PID-reuse races;
+  other platforms retain the portable fallback.
+- Manager picker cancellation remains a normal no-op while unexpected fzf
+  exits are reported as failures.
+- Large process selections are revalidated in bounded batches instead of
+  risking platform command-line limits.
+
+### Tests
+- Added integration coverage for CopyQ's basic `count`/`read` compatibility
+  path and for manager cancellation versus picker failure.
+
 ## [0.7.0] - 2026-07-12
 
 ### Added
