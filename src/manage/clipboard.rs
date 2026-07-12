@@ -15,8 +15,7 @@ use crate::tmux;
 const COPYQ_MAX_ITEMS: usize = 1_000;
 const COPYQ_MAX_BYTES: usize = 64 * 1024 * 1024;
 const COPYQ_MAX_RECORD_BYTES: usize = COPYQ_MAX_BYTES.div_ceil(3) * 4 + 32;
-const COPYQ_START_ATTEMPTS: usize = 10;
-const COPYQ_START_INTERVAL_MS: u64 = 25;
+const COPYQ_MAX_INTERVAL_MS: u64 = 400;
 const CLIPBOARD_PREVIEW_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -39,22 +38,15 @@ pub(super) fn run(action: Option<&str>, context: &ManagerContext) -> Result<()> 
     if use_copyq {
         match load_copyq_snapshot() {
             Ok(loaded) => snapshot = Some(loaded),
-            Err(_) => {
-                let _ = Command::new("copyq")
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn();
-                match retry_copyq_snapshot() {
-                    Ok(loaded) => snapshot = Some(loaded),
-                    Err(error) if action == Some("system") => {
-                        return Err(error).context(
-                            "CopyQ is installed but its clipboard service or snapshot is unavailable",
-                        );
-                    }
-                    Err(_) => use_copyq = false,
+            Err(_) => match start_copyq_and_snapshot(context) {
+                Ok(loaded) => snapshot = Some(loaded),
+                Err(error) if action == Some("system") => {
+                    return Err(error).context(
+                        "CopyQ is installed but its clipboard service or snapshot is unavailable",
+                    );
                 }
-            }
+                Err(_) => use_copyq = false,
+            },
         }
     }
     if use_copyq {
@@ -229,18 +221,47 @@ fn parse_copyq_snapshot_reader(mut reader: impl BufRead) -> Result<ClipboardSnap
     Ok(ClipboardSnapshot { entries, data })
 }
 
-fn retry_copyq_snapshot() -> Result<ClipboardSnapshot> {
+fn start_copyq_and_snapshot(context: &ManagerContext) -> Result<ClipboardSnapshot> {
+    // Launching the background CopyQ server can fail outright in headless or
+    // display-less environments; when it does there is nothing to wait for, so
+    // give up immediately instead of burning the whole retry budget.
+    Command::new("copyq")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start the CopyQ server")?;
+    let attempts = context.config.copyq_start_attempts.max(1);
+    let mut interval = context.config.copyq_start_interval_ms;
     let mut last_error = None;
-    for attempt in 0..COPYQ_START_ATTEMPTS {
+    for attempt in 0..attempts {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(COPYQ_START_INTERVAL_MS));
+            std::thread::sleep(std::time::Duration::from_millis(interval));
+            interval = (interval.saturating_mul(2)).min(COPYQ_MAX_INTERVAL_MS);
+        }
+        // Probe with a cheap command first so we only pay for a full snapshot
+        // once the server is actually answering; this also lets us attribute a
+        // failure to "server not ready" rather than "snapshot unparsable".
+        if !copyq_ready() {
+            continue;
         }
         match load_copyq_snapshot() {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.context("CopyQ did not become available")?)
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("CopyQ did not become available")))
+}
+
+fn copyq_ready() -> bool {
+    Command::new("copyq")
+        .args(["eval", "--", "size()"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn clipboard_summary(content: &[u8]) -> String {

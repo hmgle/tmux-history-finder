@@ -74,6 +74,8 @@ struct ManagerConfig {
     menu_popup: bool,
     menu_popup_width: String,
     menu_popup_height: String,
+    copyq_start_attempts: usize,
+    copyq_start_interval_ms: u64,
 }
 
 #[derive(Debug)]
@@ -214,6 +216,15 @@ impl ManagerConfig {
                     .with_context(|| format!("invalid manager setting {env_name}/manager_{name}")),
             }
         };
+        let number = |name: &str, env_name: &str, default: u64| -> Result<u64> {
+            match get(name, env_name, "") {
+                None => Ok(default),
+                Some(value) => value
+                    .trim()
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid manager setting {env_name}/manager_{name}")),
+            }
+        };
         let mut order: Vec<String> = get("order", "TNX_MANAGER_ORDER", "TMUX_FZF_ORDER")
             .unwrap_or_else(|| {
                 "history|copy-mode|session|window|pane|command|keybinding|clipboard|process".into()
@@ -290,6 +301,17 @@ impl ManagerConfig {
                 "TMUX_FZF_MENU_POPUP_HEIGHT",
             )
             .unwrap_or_else(|| "50%".into()),
+            copyq_start_attempts: number(
+                "copyq_start_attempts",
+                "TNX_MANAGER_COPYQ_START_ATTEMPTS",
+                6,
+            )?
+            .clamp(1, 100) as usize,
+            copyq_start_interval_ms: number(
+                "copyq_start_interval_ms",
+                "TNX_MANAGER_COPYQ_START_INTERVAL_MS",
+                25,
+            )?,
         })
     }
 }

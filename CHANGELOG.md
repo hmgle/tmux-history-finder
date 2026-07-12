@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- CopyQ startup now aborts early when the server fails to launch (headless or
+  display-less environments), probes readiness with a cheap `size()` call before
+  requesting a full snapshot, and backs off exponentially between probes.
+
+### Added
+- Added `copyq_start_attempts` and `copyq_start_interval_ms` manager settings to
+  tune how long to wait for the CopyQ server to become available.
+
 ## [0.7.0] - 2026-07-12
 
 ### Added
