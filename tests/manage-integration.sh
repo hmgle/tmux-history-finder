@@ -20,6 +20,9 @@ cat > "$TMP/bin/fzf" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 input="$(cat)"
+if [ -n "${TNX_TEST_FZF_EXIT:-}" ]; then
+    exit "$TNX_TEST_FZF_EXIT"
+fi
 case " $* " in
     *" --print-query "*)
         printf '%s\n' "${TNX_TEST_QUERY:-test-name}"
@@ -58,6 +61,7 @@ run_manage() {
     PATH="$TMP/bin:$PATH" \
         TNX_TMUX_ARGS="-L $SOCKET" \
         TNX_TEST_COPYQ_LOG="$TMP/copyq.log" \
+        TNX_TEST_FZF_EXIT="${TNX_TEST_FZF_EXIT:-}" \
         TNX_MANAGER_FZF_OPTIONS="" \
         TNX_MANAGER_CONFIRM=0 \
         "$BIN" manage "$@"
@@ -84,6 +88,12 @@ tmux -L "$SOCKET" capture-pane -p -t "$pane_two" | grep -Fq copyq-line-one
 tmux -L "$SOCKET" bind-key -T prefix C-g set-option -g @manager_binding_ran yes
 TNX_TEST_MATCH="@manager_binding_ran" run_manage keybinding
 [ "$(tmux -L "$SOCKET" show-option -gqv @manager_binding_ran)" = yes ]
+
+TNX_TEST_FZF_EXIT=130 run_manage pane switch
+if TNX_TEST_FZF_EXIT=2 run_manage pane switch 2>/dev/null; then
+    echo "manager integration: fzf failure was treated as cancellation" >&2
+    exit 1
+fi
 
 TNX_TEST_QUERY="created-manager-session" run_manage session new
 tmux -L "$SOCKET" has-session -t created-manager-session
