@@ -237,7 +237,7 @@ fn start_copyq_and_snapshot(context: &ManagerContext) -> Result<ClipboardSnapsho
     for attempt in 0..attempts {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(interval));
-            interval = (interval.saturating_mul(2)).min(COPYQ_MAX_INTERVAL_MS);
+            interval = next_backoff_interval(interval);
         }
         // Probe with a cheap command first so we only pay for a full snapshot
         // once the server is actually answering; this also lets us attribute a
@@ -251,6 +251,10 @@ fn start_copyq_and_snapshot(context: &ManagerContext) -> Result<ClipboardSnapsho
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("CopyQ did not become available")))
+}
+
+fn next_backoff_interval(interval: u64) -> u64 {
+    interval.saturating_mul(2).min(COPYQ_MAX_INTERVAL_MS)
 }
 
 fn copyq_ready() -> bool {
@@ -393,8 +397,16 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::{
-        parse_copyq_snapshot, print_blob_preview, read_clipboard_entries, sanitize_preview_text,
+        next_backoff_interval, parse_copyq_snapshot, print_blob_preview, read_clipboard_entries,
+        sanitize_preview_text, COPYQ_MAX_INTERVAL_MS,
     };
+
+    #[test]
+    fn backoff_doubles_then_saturates_at_the_cap() {
+        assert_eq!(next_backoff_interval(25), 50);
+        assert_eq!(next_backoff_interval(300), COPYQ_MAX_INTERVAL_MS);
+        assert_eq!(next_backoff_interval(u64::MAX), COPYQ_MAX_INTERVAL_MS);
+    }
 
     #[test]
     fn copyq_snapshot_preserves_empty_multiline_and_binary_entries() {
