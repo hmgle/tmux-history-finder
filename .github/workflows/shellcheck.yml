@@ -22,6 +22,8 @@ jobs:
             tests/*.sh
       - name: Run installer tests
         run: bash tests/install-binary.sh
+      - name: Run launcher tests
+        run: bash tests/launcher.sh
       - name: Run shell quoting tests
         run: bash tests/shell-quoting.sh
       - name: Check formatting

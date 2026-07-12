@@ -5,7 +5,7 @@
 #   1. $TNX_BIN, when it points at an executable (explicit override).
 #   2. A locally built binary under target/ (cargo build output).
 #   3. A previously installed binary under bin/ (prebuilt download).
-#   4. `cargo run`, when a Rust toolchain is available (source checkouts/dev).
+#   4. `cargo run --release`, when a Rust toolchain is available.
 #   5. A prebuilt release binary downloaded for this platform (no toolchain).
 # Step 4 precedes step 5 so a machine that can build always runs its own source;
 # toolchain-less installs fall through to a download. If nothing works we print
@@ -54,9 +54,9 @@ for candidate in \
     fi
 done
 
-# 4. Source checkout with a toolchain: run (and rebuild on change) from source.
+# 4. Source checkout with a toolchain: build an optimized binary, then run it.
 if command -v cargo >/dev/null 2>&1; then
-    exec cargo run --quiet --manifest-path "$DIR/Cargo.toml" -- "$@"
+    exec cargo run --release --quiet --manifest-path "$DIR/Cargo.toml" -- "$@"
 fi
 
 # 5. No toolchain: fetch a prebuilt release binary for this platform, then exec.

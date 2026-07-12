@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- When no current backend binary exists, the `tnx` wrapper now builds with
+  Cargo's optimized release profile instead of leaving a debug binary for
+  normal tmux use.
+
+### Tests
+- Added launcher coverage that verifies the automatic Cargo fallback selects
+  the release profile.
+
 ## [0.7.1] - 2026-07-12
 
 ### Changed

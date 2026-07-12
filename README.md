@@ -35,7 +35,7 @@ The wrapper `tnx` resolves the `tnx` backend in this order:
 1. `$TNX_BIN`, if set to an executable.
 2. A locally built binary (`target/release/tnx` or `target/debug/tnx`).
 3. A current, previously downloaded binary (`bin/tnx`).
-4. `cargo run`, when a Rust toolchain is present (source checkouts/development).
+4. An optimized `cargo run --release` build when a Rust toolchain is present.
 5. Otherwise, a prebuilt release binary is downloaded for your platform via
    `scripts/install-binary.sh` (checksum-verified) into `bin/tnx`.
 
@@ -67,9 +67,9 @@ run-shell /path/to/tmux-nexus/tmux_nexus.tmux
 
 When installed with TPM, `prefix + U` or `update_plugins` updates the Git
 checkout. The wrapper ignores stale local or cached binaries on the next run,
-then rebuilds with Cargo or downloads the binary for an exact release tag.
-
-If you build from source, rebuild the backend after updating:
+then rebuilds an optimized release binary with Cargo or downloads the binary
+for an exact release tag. To avoid compilation latency on the first shortcut,
+build the backend immediately after updating:
 
 ```sh
 ~/.tmux/plugins/tpm/bin/update_plugins tmux-nexus
@@ -297,6 +297,7 @@ env -u TMUX -u TMUX_PANE cargo test --locked
 cargo build --locked
 shellcheck -x --source-path=SCRIPTDIR \
   tnx tmux_nexus.tmux scripts/*.sh tests/*.sh
+bash tests/launcher.sh
 bash tests/install-binary.sh
 env -u TMUX -u TMUX_PANE bash tests/shell-quoting.sh
 env -u TMUX -u TMUX_PANE bash tests/tmux-integration.sh

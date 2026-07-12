@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tnx-launcher-test.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+
+repo="$TMP/repo"
+mkdir -p "$repo/src" "$TMP/bin"
+cp "$ROOT/tnx" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" "$repo/"
+
+cat > "$TMP/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+printf '<%s>\n' "$@"
+EOF
+chmod +x "$TMP/bin/cargo"
+
+output="$(
+    env -u TNX_BIN -u TNX_AUTO_DOWNLOAD \
+        PATH="$TMP/bin:/usr/bin:/bin" \
+        bash "$repo/tnx" sample-argument
+)"
+expected="$(printf '<run>\n<--release>\n<--quiet>\n<--manifest-path>\n<%s>\n<-->\n<sample-argument>' "$repo/Cargo.toml")"
+
+if [ "$output" != "$expected" ]; then
+    echo "launcher test: Cargo fallback did not use the release profile" >&2
+    printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$output" >&2
+    exit 1
+fi
+
+echo "launcher tests passed"
