@@ -367,7 +367,13 @@ fn one_line(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_copyq_snapshot, read_clipboard_entries, sanitize_preview_text};
+    use std::io::Write;
+
+    use tempfile::NamedTempFile;
+
+    use super::{
+        parse_copyq_snapshot, print_blob_preview, read_clipboard_entries, sanitize_preview_text,
+    };
 
     #[test]
     fn copyq_snapshot_preserves_empty_multiline_and_binary_entries() {
@@ -388,5 +394,20 @@ mod tests {
             sanitize_preview_text("safe\n\x1b[31mred\t\x07"),
             "safe\n�[31mred\t�"
         );
+    }
+
+    #[test]
+    fn copyq_snapshot_rejects_invalid_and_truncated_base64() {
+        assert!(parse_copyq_snapshot(b"0\t%%%\n").is_err());
+        assert!(parse_copyq_snapshot(b"0\taGVsbG8\n").is_err());
+    }
+
+    #[test]
+    fn blob_preview_rejects_ranges_outside_the_snapshot() {
+        let mut data = NamedTempFile::new().unwrap();
+        data.write_all(b"hello").unwrap();
+        data.flush().unwrap();
+        assert!(print_blob_preview(data.path(), 4, 2).is_err());
+        assert!(print_blob_preview(data.path(), u64::MAX, 1).is_err());
     }
 }
