@@ -85,6 +85,25 @@ if tmux -L "$SOCKET" list-windows -t manager -F '#{window_name}' | \
     exit 1
 fi
 
+linked_window="$(tmux -L "$SOCKET" new-window -d -t manager \
+    -n linked-manager-window -P -F '#{window_id}' 'sleep 60')"
+tmux -L "$SOCKET" new-session -d -s linked-other 'sleep 60'
+tmux -L "$SOCKET" link-window -s "$linked_window" -t linked-other:
+linked_index="$(tmux -L "$SOCKET" display-message -p \
+    -t "manager:$linked_window" '#{window_index}')"
+THF_TEST_MATCH="manager:$linked_index: linked-manager-window" run_manage window kill
+if tmux -L "$SOCKET" list-windows -t manager -F '#{window_name}' | \
+    rg -q '^linked-manager-window$'; then
+    echo "manager integration: selected window link was not removed" >&2
+    exit 1
+fi
+if ! tmux -L "$SOCKET" list-windows -t linked-other -F '#{window_name}' | \
+    rg -q '^linked-manager-window$'; then
+    echo "manager integration: window kill removed the wrong linked window" >&2
+    exit 1
+fi
+tmux -L "$SOCKET" kill-session -t linked-other
+
 marker="$TMP/menu-ran"
 THF_MANAGER_MENU="mark\nprintf '%s' done > '$marker'\n" run_manage menu
 for _ in $(seq 1 50); do

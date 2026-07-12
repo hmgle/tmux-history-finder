@@ -340,7 +340,11 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     let current_session =
         tmux::try_stdout(["display-message", "-p", "#{session_id}"]).unwrap_or_default();
     if matches!(action.as_str(), "link" | "move") {
-        rows.retain(|row| window_session(&row.id).as_deref() != Some(current_session.as_str()));
+        rows.retain(|row| {
+            window_target_parts(&row.id)
+                .map(|(session, _)| session != current_session)
+                .unwrap_or(false)
+        });
         let selected = selected_rows(
             &rows,
             config,
@@ -367,7 +371,8 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         return Ok(());
     }
     if action == "switch" && !config.switch_current {
-        rows.retain(|row| row.id != current_window);
+        let current_target = window_target(&current_session, &current_window);
+        rows.retain(|row| row.id != current_target);
     }
     let selected = selected_rows(
         &rows,
@@ -387,8 +392,8 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     let client = tmux::TmuxClient::from_env()?;
     match action.as_str() {
         "switch" => {
-            let session = window_session(&selected[0].id).context("window has no session")?;
-            let mut commands = client_switch_commands(&session);
+            let (session, _) = window_target_parts(&selected[0].id)?;
+            let mut commands = client_switch_commands(session);
             commands.push(command(["select-window", "-t", selected[0].id.as_str()]));
             client.run_commands(&commands)
         }
@@ -405,8 +410,13 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         }
         "swap" => {
             let source = selected[0].id.clone();
+            let (_, source_window) = window_target_parts(&source)?;
             drop(selected);
-            rows.retain(|row| row.id != source);
+            rows.retain(|row| {
+                window_target_parts(&row.id)
+                    .map(|(_, window)| window != source_window)
+                    .unwrap_or(false)
+            });
             let other = selected_rows(
                 &rows,
                 config,
@@ -1116,10 +1126,19 @@ fn window_rows(config: &ManagerConfig) -> Result<Vec<Row>> {
             let id = fields.next()?;
             let session_id = fields.next()?;
             let display = fields.next().unwrap_or_default();
-            let _ = session_id;
-            Some(Row::new(id, display))
+            Some(Row::new(window_target(session_id, id), display))
         })
         .collect())
+}
+
+fn window_target(session_id: &str, window_id: &str) -> String {
+    format!("{session_id}:{window_id}")
+}
+
+fn window_target_parts(target: &str) -> Result<(&str, &str)> {
+    target
+        .split_once(':')
+        .context("manager window target is missing its session")
 }
 
 fn pane_rows(config: &ManagerConfig) -> Result<Vec<Row>> {
@@ -1532,10 +1551,6 @@ fn version_at_least_patch(value: &str, major: u64, minor: u64, patch: u64) -> bo
             .unwrap_or(0),
     );
     found >= (major, minor, patch)
-}
-
-fn window_session(window: &str) -> Option<String> {
-    tmux::try_stdout(["display-message", "-p", "-t", window, "#{session_id}"])
 }
 
 fn session_attached(session: &str) -> bool {
