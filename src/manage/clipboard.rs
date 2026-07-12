@@ -1,7 +1,6 @@
 use std::{
-    ffi::OsStr,
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::Path,
     process::{Command, Stdio},
 };
@@ -15,6 +14,9 @@ use crate::tmux;
 
 const COPYQ_MAX_ITEMS: usize = 1_000;
 const COPYQ_MAX_BYTES: usize = 64 * 1024 * 1024;
+const COPYQ_MAX_RECORD_BYTES: usize = COPYQ_MAX_BYTES.div_ceil(3) * 4 + 32;
+const COPYQ_START_ATTEMPTS: usize = 10;
+const COPYQ_START_INTERVAL_MS: u64 = 25;
 const CLIPBOARD_PREVIEW_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -43,8 +45,7 @@ pub(super) fn run(action: Option<&str>, context: &ManagerContext) -> Result<()> 
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .spawn();
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                match load_copyq_snapshot() {
+                match retry_copyq_snapshot() {
                     Ok(loaded) => snapshot = Some(loaded),
                     Err(error) if action == Some("system") => {
                         return Err(error).context(
@@ -128,16 +129,72 @@ fn load_copyq_snapshot() -> Result<ClipboardSnapshot> {
          for (var i = 0; i < limit; ++i) {{ \
          print(i + '\\t' + toBase64(read(i)) + '\\n'); }}"
     );
-    let output = command_stdout_bytes("copyq", ["eval", "--", script.as_str()])?;
-    parse_copyq_snapshot(&output)
+    let mut child = Command::new("copyq")
+        .args(["eval", "--", script.as_str()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to start copyq")?;
+    let stdout = child.stdout.take().context("CopyQ stdout is unavailable")?;
+    let mut stderr = child.stderr.take().context("CopyQ stderr is unavailable")?;
+    let stderr_reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stderr.read_to_end(&mut output).map(|_| output)
+    });
+    let snapshot = parse_copyq_snapshot_reader(BufReader::new(stdout));
+    if snapshot.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("CopyQ stderr reader panicked"))??;
+    let snapshot = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                let stderr = String::from_utf8_lossy(&stderr);
+                format!("failed to parse CopyQ snapshot: {}", stderr.trim())
+            })
+        }
+    };
+    if !status.success() {
+        anyhow::bail!("copyq failed: {}", String::from_utf8_lossy(&stderr).trim());
+    }
+    Ok(snapshot)
 }
 
+#[cfg(test)]
 fn parse_copyq_snapshot(output: &[u8]) -> Result<ClipboardSnapshot> {
-    let encoded = std::str::from_utf8(output).context("CopyQ snapshot is not UTF-8 base64 data")?;
+    parse_copyq_snapshot_reader(std::io::Cursor::new(output))
+}
+
+fn parse_copyq_snapshot_reader(mut reader: impl BufRead) -> Result<ClipboardSnapshot> {
     let mut data = NamedTempFile::new()?;
     let mut entries = Vec::new();
     let mut offset = 0_u64;
-    for line in encoded.lines() {
+    let mut record = Vec::new();
+    loop {
+        record.clear();
+        let count = reader
+            .by_ref()
+            .take((COPYQ_MAX_RECORD_BYTES + 1) as u64)
+            .read_until(b'\n', &mut record)
+            .context("failed to read CopyQ snapshot")?;
+        if count == 0 {
+            break;
+        }
+        if record.len() > COPYQ_MAX_RECORD_BYTES {
+            anyhow::bail!("CopyQ snapshot contains an oversized record");
+        }
+        if record.last() == Some(&b'\n') {
+            record.pop();
+        }
+        if record.last() == Some(&b'\r') {
+            record.pop();
+        }
+        let line =
+            std::str::from_utf8(&record).context("CopyQ snapshot is not UTF-8 base64 data")?;
         let (source_index, encoded_content) = line
             .split_once('\t')
             .context("CopyQ snapshot record is missing its delimiter")?;
@@ -170,6 +227,20 @@ fn parse_copyq_snapshot(output: &[u8]) -> Result<ClipboardSnapshot> {
     }
     data.flush()?;
     Ok(ClipboardSnapshot { entries, data })
+}
+
+fn retry_copyq_snapshot() -> Result<ClipboardSnapshot> {
+    let mut last_error = None;
+    for attempt in 0..COPYQ_START_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(COPYQ_START_INTERVAL_MS));
+        }
+        match load_copyq_snapshot() {
+            Ok(snapshot) => return Ok(snapshot),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.context("CopyQ did not become available")?)
 }
 
 fn clipboard_summary(content: &[u8]) -> String {
@@ -292,21 +363,6 @@ fn print_hex_preview(content: &[u8]) {
 
 fn one_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn command_stdout_bytes<I, S>(program: &str, args: I) -> Result<Vec<u8>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new(program).args(args).output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(output.stdout)
 }
 
 #[cfg(test)]
