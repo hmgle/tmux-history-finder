@@ -87,7 +87,13 @@ fn process_rows() -> Result<Vec<ProcessEntry>> {
             "uid=,user=,pid=,lstart=,ppid=,stat=,%cpu=,%mem=,command=",
         ],
     )?;
-    Ok(output.lines().filter_map(parse_process_entry).collect())
+    let mut processes: Vec<ProcessEntry> = output.lines().filter_map(parse_process_entry).collect();
+    for process in &mut processes {
+        if let Some(started) = process_start_identity(process.pid) {
+            process.started = started;
+        }
+    }
+    Ok(processes)
 }
 
 fn parse_process_entry(line: &str) -> Option<ProcessEntry> {
@@ -132,17 +138,7 @@ fn signal_processes(
             continue;
         }
         let result: Result<()> = if process.uid == current_uid {
-            match libc::pid_t::try_from(process.pid) {
-                Ok(pid) => {
-                    let status = unsafe { libc::kill(pid, signal_number) };
-                    if status == 0 {
-                        Ok(())
-                    } else {
-                        Err(std::io::Error::last_os_error().into())
-                    }
-                }
-                Err(_) => Err(anyhow::anyhow!("PID is outside the platform range")),
-            }
+            signal_same_uid(process, signal_number)
         } else if let Some(program) = privilege {
             match Command::new(program)
                 .args(["kill", "-s", signal_name, &process.pid.to_string()])
@@ -176,25 +172,37 @@ fn signal_processes(
 fn current_process_identities(
     processes: &[&ProcessEntry],
 ) -> Result<HashMap<u32, ProcessIdentity>> {
-    let pids = processes
-        .iter()
-        .map(|process| process.pid.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let output = Command::new("ps")
-        .args(["-o", "uid=,pid=,lstart=", "-p", pids.as_str()])
-        .output()
-        .context("failed to revalidate selected processes")?;
-    if !output.status.success() && output.status.code() != Some(1) {
-        anyhow::bail!(
-            "ps failed while revalidating processes: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+    const PS_PID_BATCH: usize = 512;
+    let mut identities = HashMap::new();
+    for batch in processes.chunks(PS_PID_BATCH) {
+        let pids = batch
+            .iter()
+            .map(|process| process.pid.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let output = Command::new("ps")
+            .args(["-o", "uid=,pid=,lstart=", "-p", pids.as_str()])
+            .output()
+            .context("failed to revalidate selected processes")?;
+        if !output.status.success() && output.status.code() != Some(1) {
+            anyhow::bail!(
+                "ps failed while revalidating processes: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        identities.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let (pid, mut identity) = parse_process_identity(line)?;
+                    if let Some(started) = process_start_identity(pid) {
+                        identity.started = started;
+                    }
+                    Some((pid, identity))
+                }),
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_process_identity)
-        .collect())
+    Ok(identities)
 }
 
 fn parse_process_identity(line: &str) -> Option<(u32, ProcessIdentity)> {
@@ -203,6 +211,73 @@ fn parse_process_identity(line: &str) -> Option<(u32, ProcessIdentity)> {
     let pid: u32 = fields.get(1)?.parse().ok()?;
     let started = fields.get(2..7)?.join(" ");
     Some((pid, ProcessIdentity { uid, started }))
+}
+
+#[cfg(target_os = "linux")]
+fn process_start_identity(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let command_end = stat.rfind(')')?;
+    let start_ticks = stat.get(command_end + 2..)?.split_whitespace().nth(19)?;
+    Some(format!("linux:{start_ticks}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_start_identity(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn signal_same_uid(process: &ProcessEntry, signal_number: i32) -> Result<()> {
+    let pid = libc::pid_t::try_from(process.pid)
+        .map_err(|_| anyhow::anyhow!("PID is outside the platform range"))?;
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if pidfd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ENOSYS) {
+            let status = unsafe { libc::kill(pid, signal_number) };
+            return if status == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error()).context("process signal failed")
+            };
+        }
+        return Err(error).context("failed to open process pidfd");
+    }
+    let result = (|| {
+        let current = process_start_identity(process.pid)
+            .context("process exited while opening its pidfd")?;
+        if current != process.started {
+            anyhow::bail!("process changed identity while opening its pidfd");
+        }
+        let status = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd,
+                signal_number,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error()).context("pidfd signal failed")
+        }
+    })();
+    unsafe { libc::close(pidfd as libc::c_int) };
+    result
+}
+
+#[cfg(not(target_os = "linux"))]
+fn signal_same_uid(process: &ProcessEntry, signal_number: i32) -> Result<()> {
+    let pid = libc::pid_t::try_from(process.pid)
+        .map_err(|_| anyhow::anyhow!("PID is outside the platform range"))?;
+    let status = unsafe { libc::kill(pid, signal_number) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).context("process signal failed")
+    }
 }
 
 fn confirm_action(context: &ManagerContext, prompt: &str) -> Result<bool> {
