@@ -150,10 +150,17 @@ enum PreviewSpec<'a> {
 }
 
 #[derive(Clone, Debug)]
-struct ProcessRow {
+struct ProcessEntry {
     row: Row,
-    user: String,
+    uid: u32,
     pid: u32,
+    started: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProcessIdentity {
+    uid: u32,
+    started: String,
 }
 
 pub fn run(args: ManageArgs) -> Result<()> {
@@ -1174,79 +1181,154 @@ fn run_process(action: Option<&str>, context: &ManagerContext) -> Result<()> {
             "70%",
         );
     }
-    let signal = match action.as_str() {
-        "terminate" => "TERM",
-        "kill" => "KILL",
-        "interrupt" => "INT",
-        "continue" => "CONT",
-        "stop" => "STOP",
-        "quit" => "QUIT",
-        "hangup" => "HUP",
+    let (signal_name, signal_number) = match action.as_str() {
+        "terminate" => ("TERM", libc::SIGTERM),
+        "kill" => ("KILL", libc::SIGKILL),
+        "interrupt" => ("INT", libc::SIGINT),
+        "continue" => ("CONT", libc::SIGCONT),
+        "stop" => ("STOP", libc::SIGSTOP),
+        "quit" => ("QUIT", libc::SIGQUIT),
+        "hangup" => ("HUP", libc::SIGHUP),
         _ => unreachable!(),
     };
-    let selected: Vec<&ProcessRow> = indexes.iter().map(|index| &processes[*index]).collect();
-    signal_processes(context, signal, &selected)
+    let selected: Vec<&ProcessEntry> = indexes.iter().map(|index| &processes[*index]).collect();
+    signal_processes(context, signal_name, signal_number, &selected)
 }
 
-fn process_rows() -> Result<Vec<ProcessRow>> {
-    let output = command_stdout("ps", ["-eo", "user=,pid=,ppid=,stat=,%cpu=,%mem=,command="])?;
-    Ok(output
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            let pid: u32 = fields.get(1)?.parse().ok()?;
-            Some(ProcessRow {
-                row: Row::new(pid.to_string(), line.trim()),
-                user: fields[0].to_string(),
-                pid,
-            })
-        })
-        .collect())
+fn process_rows() -> Result<Vec<ProcessEntry>> {
+    let output = command_stdout(
+        "ps",
+        [
+            "-eo",
+            "uid=,user=,pid=,lstart=,ppid=,stat=,%cpu=,%mem=,command=",
+        ],
+    )?;
+    Ok(output.lines().filter_map(parse_process_entry).collect())
+}
+
+fn parse_process_entry(line: &str) -> Option<ProcessEntry> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let uid: u32 = fields.first()?.parse().ok()?;
+    let pid: u32 = fields.get(2)?.parse().ok()?;
+    let started = fields.get(3..8)?.join(" ");
+    Some(ProcessEntry {
+        row: Row::new(pid.to_string(), line.trim()),
+        uid,
+        pid,
+        started,
+    })
 }
 
 fn signal_processes(
     context: &ManagerContext,
-    signal: &str,
-    processes: &[&ProcessRow],
+    signal_name: &str,
+    signal_number: i32,
+    processes: &[&ProcessEntry],
 ) -> Result<()> {
-    let current_user = command_stdout("whoami", std::iter::empty::<&str>())?
-        .trim()
-        .to_string();
+    if !confirm_action(
+        context,
+        &format!("Send {signal_name} to selected process(es)?"),
+    )? {
+        return Ok(());
+    }
+    let current_uid = unsafe { libc::geteuid() };
     let privilege = ["sudo", "doas"]
         .into_iter()
         .find(|program| tmux::have(program));
-    let mut commands: Vec<Vec<OsString>> = Vec::new();
+    let current = current_process_identities(processes)?;
+    let mut succeeded = Vec::new();
+    let mut failures = Vec::new();
     for process in processes {
-        if process.user == current_user {
-            commands.push(vec![
-                "run-shell".into(),
-                "-b".into(),
-                format!("kill -s {signal} {}", process.pid).into(),
-            ]);
+        let Some(identity) = current.get(&process.pid) else {
+            failures.push(format!("{} exited", process.pid));
+            continue;
+        };
+        if identity.uid != process.uid || identity.started != process.started {
+            failures.push(format!("{} changed identity", process.pid));
+            continue;
+        }
+        let result: Result<()> = if process.uid == current_uid {
+            match libc::pid_t::try_from(process.pid) {
+                Ok(pid) => {
+                    let status = unsafe { libc::kill(pid, signal_number) };
+                    if status == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error().into())
+                    }
+                }
+                Err(_) => Err(anyhow::anyhow!("PID is outside the platform range")),
+            }
         } else if let Some(program) = privilege {
-            commands.push(vec![
-                "split-window".into(),
-                "-v".into(),
-                "-l".into(),
-                "30%".into(),
-                "-b".into(),
-                "-c".into(),
-                "#{pane_current_path}".into(),
-                format!("{program} kill -s {signal} {}", process.pid).into(),
-            ]);
+            match Command::new(program)
+                .args(["kill", "-s", signal_name, &process.pid.to_string()])
+                .status()
+            {
+                Ok(status) if status.success() => Ok(()),
+                Ok(status) => Err(anyhow::anyhow!("{program} exited with status {status}")),
+                Err(error) => Err(error).with_context(|| format!("failed to start {program}")),
+            }
         } else {
-            anyhow::bail!(
-                "process {} belongs to {}; install sudo or doas to signal it",
-                process.pid,
-                process.user
-            );
+            Err(anyhow::anyhow!(
+                "install sudo or doas to signal UID {}",
+                process.uid
+            ))
+        };
+        match result {
+            Ok(()) => succeeded.push(process.pid),
+            Err(error) => failures.push(format!("{}: {error:#}", process.pid)),
         }
     }
-    destructive_tmux(
-        context,
-        &format!("Send {signal} to selected process(es)?"),
-        commands,
+    if failures.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "sent {signal_name} to {} process(es); failed for {}",
+        succeeded.len(),
+        failures.join(", ")
     )
+}
+
+fn current_process_identities(
+    processes: &[&ProcessEntry],
+) -> Result<HashMap<u32, ProcessIdentity>> {
+    let pids = processes
+        .iter()
+        .map(|process| process.pid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = Command::new("ps")
+        .args(["-o", "uid=,pid=,lstart=", "-p", pids.as_str()])
+        .output()
+        .context("failed to revalidate selected processes")?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        anyhow::bail!(
+            "ps failed while revalidating processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_process_identity)
+        .collect())
+}
+
+fn parse_process_identity(line: &str) -> Option<(u32, ProcessIdentity)> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let uid: u32 = fields.first()?.parse().ok()?;
+    let pid: u32 = fields.get(1)?.parse().ok()?;
+    let started = fields.get(2..7)?.join(" ");
+    Some((pid, ProcessIdentity { uid, started }))
+}
+
+fn confirm_action(context: &ManagerContext, prompt: &str) -> Result<bool> {
+    if !context.config.confirm {
+        return Ok(true);
+    }
+    let rows = [Row::new("yes", "yes"), Row::new("no", "no")];
+    Ok(choose(&rows, context, "confirm> ", prompt, false, None)?
+        .first()
+        .is_some_and(|index| rows[*index].id == "yes"))
 }
 
 fn display_process(context: &ManagerContext, pid: u32) -> Result<()> {
@@ -1953,9 +2035,10 @@ fn ensure_program(program: &str, message: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bool, parse_copyq_snapshot, parse_menu, parse_pane_entry, parse_session_entry,
-        parse_window_entry, picker_exit, read_clipboard_entries, sanitize_preview_text,
-        without_multi, without_popup_options, without_tmux_options, PickerExit,
+        parse_bool, parse_copyq_snapshot, parse_menu, parse_pane_entry, parse_process_entry,
+        parse_process_identity, parse_session_entry, parse_window_entry, picker_exit,
+        read_clipboard_entries, sanitize_preview_text, without_multi, without_popup_options,
+        without_tmux_options, PickerExit,
     };
 
     #[test]
@@ -2070,5 +2153,20 @@ mod tests {
             sanitize_preview_text("safe\n\x1b[31mred\t\x07"),
             "safe\n�[31mred\t�"
         );
+    }
+
+    #[test]
+    fn parses_numeric_process_identity_and_start_time() {
+        let process =
+            parse_process_entry("1000 alice 42 Sun Jul 12 19:52:57 2026 1 S 0.0 0.1 sleep 60")
+                .unwrap();
+        assert_eq!(process.uid, 1000);
+        assert_eq!(process.pid, 42);
+        assert_eq!(process.started, "Sun Jul 12 19:52:57 2026");
+
+        let (pid, identity) = parse_process_identity("1000 42 Sun Jul 12 19:52:57 2026").unwrap();
+        assert_eq!(pid, 42);
+        assert_eq!(identity.uid, 1000);
+        assert_eq!(identity.started, process.started);
     }
 }
