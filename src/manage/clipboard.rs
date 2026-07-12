@@ -38,15 +38,27 @@ pub(super) fn run(action: Option<&str>, context: &ManagerContext) -> Result<()> 
     if use_copyq {
         match load_copyq_snapshot() {
             Ok(loaded) => snapshot = Some(loaded),
-            Err(_) => match start_copyq_and_snapshot(context) {
-                Ok(loaded) => snapshot = Some(loaded),
-                Err(error) if action == Some("system") => {
-                    return Err(error).context(
-                        "CopyQ is installed but its clipboard service or snapshot is unavailable",
-                    );
+            Err(first_error) => {
+                // A cold CopyQ server may simply not be running yet, which this
+                // first failure cannot distinguish from a real snapshot problem
+                // (oversized, malformed, or an I/O error). If the server already
+                // answers, restarting it and re-downloading would not help, so
+                // keep the original error instead of paying for a retry loop.
+                let result = if copyq_ready() {
+                    Err(first_error)
+                } else {
+                    start_copyq_and_snapshot(context)
+                };
+                match result {
+                    Ok(loaded) => snapshot = Some(loaded),
+                    Err(error) if action == Some("system") => {
+                        return Err(error).context(
+                            "CopyQ is installed but its clipboard service or snapshot is unavailable",
+                        );
+                    }
+                    Err(_) => use_copyq = false,
                 }
-                Err(_) => use_copyq = false,
-            },
+            }
         }
     }
     if use_copyq {
@@ -222,32 +234,56 @@ fn parse_copyq_snapshot_reader(mut reader: impl BufRead) -> Result<ClipboardSnap
 }
 
 fn start_copyq_and_snapshot(context: &ManagerContext) -> Result<ClipboardSnapshot> {
-    // Launching the background CopyQ server can fail outright in headless or
-    // display-less environments; when it does there is nothing to wait for, so
-    // give up immediately instead of burning the whole retry budget.
-    Command::new("copyq")
+    let mut launcher = Command::new("copyq")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .context("failed to start the CopyQ server")?;
-    let attempts = context.config.copyq_start_attempts.max(1);
-    let mut interval = context.config.copyq_start_interval_ms;
+    wait_for_copyq_snapshot(
+        context.config.copyq_start_attempts,
+        context.config.copyq_start_interval_ms,
+        copyq_ready,
+        load_copyq_snapshot,
+        // The server we just started can exit without ever becoming reachable
+        // (typical in headless or display-less environments): spawning succeeds
+        // because the OS creates the process before CopyQ discovers it has no
+        // display and quits, so a successful spawn() is not enough on its own.
+        || matches!(launcher.try_wait(), Ok(Some(_))),
+        |interval| std::thread::sleep(std::time::Duration::from_millis(interval)),
+    )
+}
+
+/// Drive the post-launch retry loop: probe with a cheap command first so a
+/// full snapshot is only requested once the server is actually answering
+/// (this also attributes failures to "server not ready" rather than
+/// "snapshot unparsable"), back off exponentially between probes, and stop
+/// early when the launcher has already exited because nothing is left to
+/// wait for.
+fn wait_for_copyq_snapshot<T>(
+    attempts: usize,
+    initial_interval: u64,
+    mut ready: impl FnMut() -> bool,
+    mut load: impl FnMut() -> Result<T>,
+    mut launcher_exited: impl FnMut() -> bool,
+    mut sleep: impl FnMut(u64),
+) -> Result<T> {
+    let mut interval = initial_interval.min(COPYQ_MAX_INTERVAL_MS);
     let mut last_error = None;
-    for attempt in 0..attempts {
+    for attempt in 0..attempts.max(1) {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(interval));
+            sleep(interval);
             interval = next_backoff_interval(interval);
         }
-        // Probe with a cheap command first so we only pay for a full snapshot
-        // once the server is actually answering; this also lets us attribute a
-        // failure to "server not ready" rather than "snapshot unparsable".
-        if !copyq_ready() {
-            continue;
-        }
-        match load_copyq_snapshot() {
-            Ok(snapshot) => return Ok(snapshot),
-            Err(error) => last_error = Some(error),
+        if ready() {
+            match load() {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(error) => last_error = Some(error),
+            }
+        } else if launcher_exited() {
+            return Err(last_error.unwrap_or_else(|| {
+                anyhow::anyhow!("the CopyQ server exited before it became available")
+            }));
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("CopyQ did not become available")))
@@ -398,7 +434,7 @@ mod tests {
 
     use super::{
         next_backoff_interval, parse_copyq_snapshot, print_blob_preview, read_clipboard_entries,
-        sanitize_preview_text, COPYQ_MAX_INTERVAL_MS,
+        sanitize_preview_text, wait_for_copyq_snapshot, COPYQ_MAX_INTERVAL_MS,
     };
 
     #[test]
@@ -406,6 +442,105 @@ mod tests {
         assert_eq!(next_backoff_interval(25), 50);
         assert_eq!(next_backoff_interval(300), COPYQ_MAX_INTERVAL_MS);
         assert_eq!(next_backoff_interval(u64::MAX), COPYQ_MAX_INTERVAL_MS);
+    }
+
+    #[test]
+    fn copyq_wait_caps_the_configured_initial_interval() {
+        let mut sleeps = Vec::new();
+        let result = wait_for_copyq_snapshot(
+            3,
+            u64::MAX,
+            || false,
+            || Ok(()),
+            || false,
+            |interval| sleeps.push(interval),
+        );
+        assert!(result.is_err());
+        assert_eq!(sleeps, vec![COPYQ_MAX_INTERVAL_MS; 2]);
+    }
+
+    #[test]
+    fn copyq_wait_snapshots_once_the_server_answers() {
+        let mut probes = 0;
+        let mut loads = 0;
+        let mut sleeps = Vec::new();
+        let result = wait_for_copyq_snapshot(
+            10,
+            25,
+            || {
+                probes += 1;
+                probes >= 3
+            },
+            || {
+                loads += 1;
+                Ok("snapshot")
+            },
+            || false,
+            |interval| sleeps.push(interval),
+        );
+        assert_eq!(result.unwrap(), "snapshot");
+        assert_eq!(probes, 3);
+        assert_eq!(loads, 1);
+        assert_eq!(sleeps, vec![25, 50]);
+    }
+
+    #[test]
+    fn copyq_wait_stops_as_soon_as_the_launcher_exits() {
+        let probes = std::cell::Cell::new(0);
+        let mut sleeps = 0;
+        let result = wait_for_copyq_snapshot(
+            10,
+            25,
+            || {
+                probes.set(probes.get() + 1);
+                false
+            },
+            || -> anyhow::Result<()> { panic!("must not snapshot before the probe succeeds") },
+            || probes.get() >= 2,
+            |_| sleeps += 1,
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exited before it became available"));
+        assert_eq!(probes.get(), 2);
+        assert_eq!(sleeps, 1);
+    }
+
+    #[test]
+    fn copyq_wait_reports_the_last_snapshot_error() {
+        let mut loads = 0;
+        let result: anyhow::Result<()> = wait_for_copyq_snapshot(
+            3,
+            25,
+            || true,
+            || {
+                loads += 1;
+                Err(anyhow::anyhow!("snapshot failure {loads}"))
+            },
+            || false,
+            |_| {},
+        );
+        assert_eq!(loads, 3);
+        assert_eq!(result.unwrap_err().to_string(), "snapshot failure 3");
+    }
+
+    #[test]
+    fn copyq_wait_runs_at_least_one_attempt() {
+        let mut probes = 0;
+        let result = wait_for_copyq_snapshot(
+            0,
+            25,
+            || {
+                probes += 1;
+                true
+            },
+            || Ok(()),
+            || false,
+            |_| panic!("a single attempt must not sleep"),
+        );
+        assert!(result.is_ok());
+        assert_eq!(probes, 1);
     }
 
     #[test]
