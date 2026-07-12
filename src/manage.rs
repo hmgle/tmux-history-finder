@@ -97,6 +97,27 @@ struct Row {
 }
 
 #[derive(Clone, Debug)]
+struct SessionEntry {
+    row: Row,
+    attached_clients: usize,
+}
+
+#[derive(Clone, Debug)]
+struct WindowEntry {
+    row: Row,
+    session_id: String,
+    window_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct PaneEntry {
+    row: Row,
+    session_id: String,
+    window_id: String,
+    pane_id: String,
+}
+
+#[derive(Clone, Debug)]
 struct ProcessRow {
     row: Row,
     user: String,
@@ -341,16 +362,17 @@ fn run_session(action: Option<&str>, context: &ManagerContext) -> Result<()> {
         }
         return Ok(());
     }
-    let mut rows = session_rows(config)?;
+    let mut sessions = session_entries(config)?;
     let current = tmux::try_stdout(["display-message", "-p", "#{session_id}"]).unwrap_or_default();
     if action == "switch" && !config.switch_current {
-        rows.retain(|row| row.id != current);
+        sessions.retain(|session| session.row.id != current);
     }
     if action == "detach" {
-        rows.retain(|row| session_attached(&row.id));
+        sessions.retain(|session| session.attached_clients > 0);
     }
+    let rows: Vec<Row> = sessions.iter().map(|session| session.row.clone()).collect();
     let multi = matches!(action.as_str(), "detach" | "kill");
-    let selected = selected_rows(
+    let indexes = choose(
         &rows,
         context,
         "session> ",
@@ -362,13 +384,14 @@ fn run_session(action: Option<&str>, context: &ManagerContext) -> Result<()> {
         multi,
         Some("session"),
     )?;
-    if selected.is_empty() {
+    if indexes.is_empty() {
         return Ok(());
     }
+    let selected: Vec<&SessionEntry> = indexes.iter().map(|index| &sessions[*index]).collect();
     let client = &context.tmux;
     match action.as_str() {
         "switch" => {
-            let commands = client_switch_commands(&selected[0].id);
+            let commands = client_switch_commands(&selected[0].row.id);
             if commands.is_empty() {
                 Ok(())
             } else {
@@ -380,7 +403,7 @@ fn run_session(action: Option<&str>, context: &ManagerContext) -> Result<()> {
                 client.run([
                     "rename-session",
                     "-t",
-                    selected[0].id.as_str(),
+                    selected[0].row.id.as_str(),
                     name.as_str(),
                 ])?;
             }
@@ -391,7 +414,7 @@ fn run_session(action: Option<&str>, context: &ManagerContext) -> Result<()> {
             "Detach selected session client(s)?",
             selected
                 .iter()
-                .map(|row| command(["detach-client", "-s", row.id.as_str()]))
+                .map(|session| command(["detach-client", "-s", session.row.id.as_str()]))
                 .collect(),
         ),
         "kill" => destructive_tmux(
@@ -399,7 +422,7 @@ fn run_session(action: Option<&str>, context: &ManagerContext) -> Result<()> {
             "Kill selected session(s)?",
             selected
                 .iter()
-                .map(|row| command(["kill-session", "-t", row.id.as_str()]))
+                .map(|session| command(["kill-session", "-t", session.row.id.as_str()]))
                 .collect(),
         ),
         _ => unreachable!(),
@@ -413,18 +436,18 @@ fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
     if action.is_empty() {
         return Ok(());
     }
-    let mut rows = window_rows(config)?;
-    let current_window =
-        tmux::try_stdout(["display-message", "-p", "#{window_id}"]).unwrap_or_default();
-    let current_session =
-        tmux::try_stdout(["display-message", "-p", "#{session_id}"]).unwrap_or_default();
+    let mut windows = window_entries(config)?;
+    let current = context
+        .tmux
+        .stdout(["display-message", "-p", "#{session_id}\t#{window_id}"])?;
+    let (current_session, current_window) = current
+        .trim_end()
+        .split_once('\t')
+        .context("tmux returned invalid current window identifiers")?;
     if matches!(action.as_str(), "link" | "move") {
-        rows.retain(|row| {
-            window_target_parts(&row.id)
-                .map(|(session, _)| session != current_session)
-                .unwrap_or(false)
-        });
-        let selected = selected_rows(
+        windows.retain(|window| window.session_id != current_session);
+        let rows: Vec<Row> = windows.iter().map(|window| window.row.clone()).collect();
+        let indexes = choose(
             &rows,
             context,
             "source window> ",
@@ -432,7 +455,8 @@ fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
             false,
             Some("window"),
         )?;
-        if let Some(row) = selected.first() {
+        if let Some(index) = indexes.first() {
+            let window = &windows[*index];
             let command_name = if action == "link" {
                 "link-window"
             } else {
@@ -442,18 +466,20 @@ fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
                 command_name,
                 "-a",
                 "-s",
-                row.id.as_str(),
+                window.row.id.as_str(),
                 "-t",
-                current_session.as_str(),
+                current_session,
             ])?;
         }
         return Ok(());
     }
     if action == "switch" && !config.switch_current {
-        let current_target = window_target(&current_session, &current_window);
-        rows.retain(|row| row.id != current_target);
+        windows.retain(|window| {
+            window.session_id != current_session || window.window_id != current_window
+        });
     }
-    let selected = selected_rows(
+    let rows: Vec<Row> = windows.iter().map(|window| window.row.clone()).collect();
+    let indexes = choose(
         &rows,
         context,
         "window> ",
@@ -465,15 +491,19 @@ fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
         action == "kill",
         Some("window"),
     )?;
-    if selected.is_empty() {
+    if indexes.is_empty() {
         return Ok(());
     }
+    let selected: Vec<&WindowEntry> = indexes.iter().map(|index| &windows[*index]).collect();
     let client = &context.tmux;
     match action.as_str() {
         "switch" => {
-            let (session, _) = window_target_parts(&selected[0].id)?;
-            let mut commands = client_switch_commands(session);
-            commands.push(command(["select-window", "-t", selected[0].id.as_str()]));
+            let mut commands = client_switch_commands(&selected[0].session_id);
+            commands.push(command([
+                "select-window",
+                "-t",
+                selected[0].row.id.as_str(),
+            ]));
             client.run_commands(&commands)
         }
         "rename" => {
@@ -481,22 +511,19 @@ fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
                 client.run([
                     "rename-window",
                     "-t",
-                    selected[0].id.as_str(),
+                    selected[0].row.id.as_str(),
                     name.as_str(),
                 ])?;
             }
             Ok(())
         }
         "swap" => {
-            let source = selected[0].id.clone();
-            let (_, source_window) = window_target_parts(&source)?;
+            let source = selected[0].row.id.clone();
+            let source_window = selected[0].window_id.clone();
             drop(selected);
-            rows.retain(|row| {
-                window_target_parts(&row.id)
-                    .map(|(_, window)| window != source_window)
-                    .unwrap_or(false)
-            });
-            let other = selected_rows(
+            windows.retain(|window| window.window_id != source_window);
+            let rows: Vec<Row> = windows.iter().map(|window| window.row.clone()).collect();
+            let other = choose(
                 &rows,
                 context,
                 "swap with> ",
@@ -504,13 +531,13 @@ fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
                 false,
                 Some("window"),
             )?;
-            if let Some(other) = other.first() {
+            if let Some(index) = other.first() {
                 client.run([
                     "swap-window",
                     "-s",
                     source.as_str(),
                     "-t",
-                    other.id.as_str(),
+                    windows[*index].row.id.as_str(),
                 ])?;
             }
             Ok(())
@@ -520,7 +547,7 @@ fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
             "Unlink/kill selected window(s)?",
             selected
                 .iter()
-                .map(|row| command(["unlink-window", "-k", "-t", row.id.as_str()]))
+                .map(|window| command(["unlink-window", "-k", "-t", window.row.id.as_str()]))
                 .collect(),
         ),
         _ => unreachable!(),
@@ -561,14 +588,21 @@ fn run_pane(action: Option<&str>, context: &ManagerContext) -> Result<()> {
     if action == "resize" {
         return resize_pane(context);
     }
-    let mut panes = pane_rows(config)?;
-    let current = tmux::try_stdout(["display-message", "-p", "#{pane_id}"]).unwrap_or_default();
+    let mut panes = pane_entries(config)?;
+    let current = context
+        .tmux
+        .stdout(["display-message", "-p", "#{session_id}\t#{pane_id}"])?;
+    let (current_session, current_pane) = current
+        .trim_end()
+        .split_once('\t')
+        .context("tmux returned invalid current pane identifiers")?;
     if action == "join" || (action == "switch" && !config.switch_current) {
-        panes.retain(|row| row.id != current);
+        panes.retain(|pane| pane.pane_id != current_pane);
     }
+    let rows: Vec<Row> = panes.iter().map(|pane| pane.row.clone()).collect();
     let multi = matches!(action.as_str(), "join" | "kill");
-    let selected = selected_rows(
-        &panes,
+    let indexes = choose(
+        &rows,
         context,
         "pane> ",
         if multi {
@@ -579,63 +613,58 @@ fn run_pane(action: Option<&str>, context: &ManagerContext) -> Result<()> {
         multi,
         Some("pane"),
     )?;
-    if selected.is_empty() {
+    if indexes.is_empty() {
         return Ok(());
     }
+    let selected: Vec<&PaneEntry> = indexes.iter().map(|index| &panes[*index]).collect();
     let client = &context.tmux;
     match action.as_str() {
         "switch" => {
-            let session = tmux::stdout([
-                "display-message",
-                "-p",
+            let mut commands = client_switch_commands(&selected[0].session_id);
+            commands.push(command([
+                "select-window",
                 "-t",
-                selected[0].id.as_str(),
-                "#{session_id}",
-            ])?;
-            let window = tmux::stdout([
-                "display-message",
-                "-p",
-                "-t",
-                selected[0].id.as_str(),
-                "#{window_id}",
-            ])?;
-            let mut commands = client_switch_commands(session.trim());
-            commands.push(command(["select-window", "-t", window.trim()]));
-            commands.push(command(["select-pane", "-t", selected[0].id.as_str()]));
+                selected[0].window_id.as_str(),
+            ]));
+            commands.push(command(["select-pane", "-t", selected[0].pane_id.as_str()]));
             client.run_commands(&commands)
         }
-        "break" => {
-            let session = tmux::stdout(["display-message", "-p", "#{session_id}"])?;
-            client.run([
-                "break-pane",
-                "-d",
-                "-s",
-                selected[0].id.as_str(),
-                "-t",
-                &format!("{}:", session.trim()),
-            ])
-        }
+        "break" => client.run([
+            "break-pane",
+            "-d",
+            "-s",
+            selected[0].pane_id.as_str(),
+            "-t",
+            &format!("{current_session}:"),
+        ]),
         "join" => {
             let commands = selected
                 .iter()
-                .map(|row| command(["move-pane", "-s", row.id.as_str(), "-t", current.as_str()]))
+                .map(|pane| command(["move-pane", "-s", pane.pane_id.as_str(), "-t", current_pane]))
                 .collect::<Vec<_>>();
             client.run_commands(&commands)
         }
         "swap" => {
-            let source = selected[0].id.clone();
+            let source = selected[0].pane_id.clone();
             drop(selected);
-            panes.retain(|row| row.id != source);
-            let other = selected_rows(
-                &panes,
+            panes.retain(|pane| pane.pane_id != source);
+            let rows: Vec<Row> = panes.iter().map(|pane| pane.row.clone()).collect();
+            let other = choose(
+                &rows,
                 context,
                 "swap with> ",
                 "Select another pane",
                 false,
                 Some("pane"),
             )?;
-            if let Some(other) = other.first() {
-                client.run(["swap-pane", "-s", source.as_str(), "-t", other.id.as_str()])?;
+            if let Some(index) = other.first() {
+                client.run([
+                    "swap-pane",
+                    "-s",
+                    source.as_str(),
+                    "-t",
+                    panes[*index].pane_id.as_str(),
+                ])?;
             }
             Ok(())
         }
@@ -644,7 +673,7 @@ fn run_pane(action: Option<&str>, context: &ManagerContext) -> Result<()> {
             "Kill selected pane(s)?",
             selected
                 .iter()
-                .map(|row| command(["kill-pane", "-t", row.id.as_str()]))
+                .map(|pane| command(["kill-pane", "-t", pane.pane_id.as_str()]))
                 .collect(),
         ),
         _ => unreachable!(),
@@ -1185,7 +1214,7 @@ fn parse_menu(raw: &str) -> Result<Vec<(String, String)>> {
     Ok(entries)
 }
 
-fn session_rows(config: &ManagerConfig) -> Result<Vec<Row>> {
+fn session_entries(config: &ManagerConfig) -> Result<Vec<SessionEntry>> {
     let display = config
         .session_format
         .as_deref()
@@ -1194,14 +1223,26 @@ fn session_rows(config: &ManagerConfig) -> Result<Vec<Row>> {
             "#{session_name}: #{session_windows} windows #{?session_attached,[attached],[detached]}"
                 .into()
         });
-    list_rows([
+    let output = tmux::stdout([
         "list-sessions",
         "-F",
-        &format!("#{{session_id}}\t{display}"),
-    ])
+        &format!("#{{session_id}}\t#{{session_attached}}\t{display}"),
+    ])?;
+    Ok(output.lines().filter_map(parse_session_entry).collect())
 }
 
-fn window_rows(config: &ManagerConfig) -> Result<Vec<Row>> {
+fn parse_session_entry(line: &str) -> Option<SessionEntry> {
+    let mut fields = line.splitn(3, '\t');
+    let id = fields.next()?;
+    let attached_clients = fields.next()?.parse().ok()?;
+    let display = fields.next().unwrap_or_default();
+    Some(SessionEntry {
+        row: Row::new(id, display),
+        attached_clients,
+    })
+}
+
+fn window_entries(config: &ManagerConfig) -> Result<Vec<WindowEntry>> {
     let display = config
         .window_format
         .as_deref()
@@ -1209,62 +1250,59 @@ fn window_rows(config: &ManagerConfig) -> Result<Vec<Row>> {
         .unwrap_or_else(|| {
             "#S:#{window_index}: #{window_name} #{?window_active,[active],[inactive]}".into()
         });
-    let format = format!("#{{window_id}}\t#{{session_id}}\t{display}");
+    let format = format!("#{{session_id}}\t#{{window_id}}\t{display}");
     let mut args = vec!["list-windows", "-a"];
     if let Some(filter) = config.window_filter.as_deref() {
         args.extend(["-f", filter]);
     }
     args.extend(["-F", format.as_str()]);
     let output = tmux::stdout(args)?;
-    Ok(output
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.splitn(3, '\t');
-            let id = fields.next()?;
-            let session_id = fields.next()?;
-            let display = fields.next().unwrap_or_default();
-            Some(Row::new(window_target(session_id, id), display))
-        })
-        .collect())
+    Ok(output.lines().filter_map(parse_window_entry).collect())
 }
 
 fn window_target(session_id: &str, window_id: &str) -> String {
     format!("{session_id}:{window_id}")
 }
 
-fn window_target_parts(target: &str) -> Result<(&str, &str)> {
-    target
-        .split_once(':')
-        .context("manager window target is missing its session")
+fn parse_window_entry(line: &str) -> Option<WindowEntry> {
+    let mut fields = line.splitn(3, '\t');
+    let session_id = fields.next()?.to_string();
+    let window_id = fields.next()?.to_string();
+    let display = fields.next().unwrap_or_default();
+    Some(WindowEntry {
+        row: Row::new(window_target(&session_id, &window_id), display),
+        session_id,
+        window_id,
+    })
 }
 
-fn pane_rows(config: &ManagerConfig) -> Result<Vec<Row>> {
+fn pane_entries(config: &ManagerConfig) -> Result<Vec<PaneEntry>> {
     let display = config
         .pane_format
         .as_deref()
         .map(|format| format!("#S:#{{window_index}}.#{{pane_index}}: {format}"))
         .unwrap_or_else(|| "#S:#{window_index}.#{pane_index}: [#{window_name}:#{pane_title}] #{pane_current_command} [#{pane_width}x#{pane_height}] [history #{history_size}/#{history_limit}] #{?pane_active,[active],[inactive]}".into());
-    list_rows([
+    let output = tmux::stdout([
         "list-panes",
         "-a",
         "-F",
-        &format!("#{{pane_id}}\t{display}"),
-    ])
+        &format!("#{{session_id}}\t#{{window_id}}\t#{{pane_id}}\t{display}"),
+    ])?;
+    Ok(output.lines().filter_map(parse_pane_entry).collect())
 }
 
-fn list_rows<I, S>(args: I) -> Result<Vec<Row>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = tmux::stdout(args)?;
-    Ok(output
-        .lines()
-        .filter_map(|line| {
-            let (id, display) = line.split_once('\t')?;
-            Some(Row::new(id, display))
-        })
-        .collect())
+fn parse_pane_entry(line: &str) -> Option<PaneEntry> {
+    let mut fields = line.splitn(4, '\t');
+    let session_id = fields.next()?.to_string();
+    let window_id = fields.next()?.to_string();
+    let pane_id = fields.next()?.to_string();
+    let display = fields.next().unwrap_or_default();
+    Some(PaneEntry {
+        row: Row::new(&pane_id, display),
+        session_id,
+        window_id,
+        pane_id,
+    })
 }
 
 fn resolve_action(
@@ -1664,23 +1702,11 @@ fn ensure_program(program: &str, message: &str) -> Result<()> {
     }
 }
 
-fn session_attached(session: &str) -> bool {
-    tmux::try_stdout([
-        "display-message",
-        "-p",
-        "-t",
-        session,
-        "#{session_attached}",
-    ])
-    .as_deref()
-        == Some("1")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bool, parse_menu, picker_exit, without_multi, without_popup_options,
-        without_tmux_options, PickerExit,
+        parse_bool, parse_menu, parse_pane_entry, parse_session_entry, parse_window_entry,
+        picker_exit, without_multi, without_popup_options, without_tmux_options, PickerExit,
     };
 
     #[test]
@@ -1754,5 +1780,25 @@ mod tests {
         assert_eq!(picker_exit(Some(130)), PickerExit::Cancelled);
         assert_eq!(picker_exit(Some(2)), PickerExit::Failed);
         assert_eq!(picker_exit(None), PickerExit::Failed);
+    }
+
+    #[test]
+    fn parses_typed_workspace_entries_with_tabs_in_display() {
+        let session = parse_session_entry("$1\t2\twork\tquoted").unwrap();
+        assert_eq!(session.row.id, "$1");
+        assert_eq!(session.attached_clients, 2);
+        assert_eq!(session.row.display, "work\tquoted");
+
+        let window = parse_window_entry("$1\t@2\twork:1\tname").unwrap();
+        assert_eq!(window.session_id, "$1");
+        assert_eq!(window.window_id, "@2");
+        assert_eq!(window.row.id, "$1:@2");
+        assert_eq!(window.row.display, "work:1\tname");
+
+        let pane = parse_pane_entry("$1\t@2\t%3\twork:1.0\ttitle").unwrap();
+        assert_eq!(pane.session_id, "$1");
+        assert_eq!(pane.window_id, "@2");
+        assert_eq!(pane.pane_id, "%3");
+        assert_eq!(pane.row.display, "work:1.0\ttitle");
     }
 }
