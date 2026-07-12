@@ -136,6 +136,9 @@ enum PreviewSpec<'a> {
 
 pub fn run(args: ManageArgs) -> Result<()> {
     ensure_program("tmux", "tmux is required for manage")?;
+    if args.category.as_deref() == Some("history") {
+        return run_history();
+    }
     ensure_program("fzf", "fzf is required for manage")?;
     let config = ManagerConfig::load()?;
     let context = ManagerContext {
