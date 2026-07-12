@@ -151,11 +151,6 @@ default. TAB selects multiple targets for detach, kill, join, clipboard paste,
 and process signals. Object actions use hidden tmux IDs, so custom formats may
 contain spaces, colons, quotes, and duplicate display text safely.
 
-CopyQ history is loaded as one binary-safe snapshot so the displayed,
-previewed, and pasted content cannot drift when clipboard history changes.
-The snapshot is limited to the newest 1,000 entries and 64 MiB in total;
-individual previews are limited to 1 MiB.
-
 ## Configuration
 
 Set options in tmux:
@@ -226,8 +221,6 @@ Manager settings use `@tmux_nexus_manager_*` tmux options or
 | `menu` | empty | legacy-compatible label/command pairs |
 | `menu_popup` | `0` | run menu commands in a popup |
 | `menu_popup_width`, `menu_popup_height` | `50%`, `50%` | menu popup size |
-| `copyq_start_attempts` | `6` | how many times to probe for the CopyQ server after starting it |
-| `copyq_start_interval_ms` | `25` | initial delay between CopyQ readiness probes (doubles each retry; every delay is capped at 400ms) |
 
 For migration, the manager also reads the corresponding `TMUX_FZF_*`
 variables when no new setting is present. The precedence is `TNX_MANAGER_*`,

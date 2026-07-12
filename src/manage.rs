@@ -4,7 +4,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io::{ErrorKind, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
 };
 
@@ -51,10 +51,6 @@ pub struct PreviewArgs {
     data: PathBuf,
     #[arg(long)]
     row: Option<usize>,
-    #[arg(long)]
-    offset: Option<u64>,
-    #[arg(long)]
-    length: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,8 +70,6 @@ struct ManagerConfig {
     menu_popup: bool,
     menu_popup_width: String,
     menu_popup_height: String,
-    copyq_start_attempts: usize,
-    copyq_start_interval_ms: u64,
 }
 
 #[derive(Debug)]
@@ -130,10 +124,6 @@ struct PaneEntry {
 #[derive(Clone, Copy, Debug)]
 enum PreviewSpec<'a> {
     Rows(&'a str),
-    Blob {
-        path: &'a Path,
-        entries: &'a [(u64, u64)],
-    },
 }
 
 pub fn run(args: ManageArgs) -> Result<()> {
@@ -171,13 +161,6 @@ pub fn run(args: ManageArgs) -> Result<()> {
 }
 
 pub fn preview(args: PreviewArgs) -> Result<()> {
-    if args.kind == "blob" {
-        return clipboard::print_blob_preview(
-            &args.data,
-            args.offset.context("blob preview requires --offset")?,
-            args.length.context("blob preview requires --length")?,
-        );
-    }
     let rows: Vec<Row> = serde_json::from_reader(
         File::open(&args.data)
             .with_context(|| format!("failed to open preview data {}", args.data.display()))?,
@@ -189,6 +172,7 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
         "session" => print_tmux(["capture-pane", "-ep", "-t", &format!("{}:", row.id)]),
         "window" | "pane" => print_tmux(["capture-pane", "-ep", "-t", row.id.as_str()]),
         "buffer" => print_tmux(["show-buffer", "-b", row.id.as_str()]),
+        "copyq" => clipboard::print_copyq_preview(&row.id),
         _ => Ok(()),
     }
 }
@@ -213,15 +197,6 @@ impl ManagerConfig {
             match get(name, env_name, legacy) {
                 None => Ok(default),
                 Some(value) => parse_bool(&value)
-                    .with_context(|| format!("invalid manager setting {env_name}/manager_{name}")),
-            }
-        };
-        let number = |name: &str, env_name: &str, default: u64| -> Result<u64> {
-            match get(name, env_name, "") {
-                None => Ok(default),
-                Some(value) => value
-                    .trim()
-                    .parse::<u64>()
                     .with_context(|| format!("invalid manager setting {env_name}/manager_{name}")),
             }
         };
@@ -301,17 +276,6 @@ impl ManagerConfig {
                 "TMUX_FZF_MENU_POPUP_HEIGHT",
             )
             .unwrap_or_else(|| "50%".into()),
-            copyq_start_attempts: number(
-                "copyq_start_attempts",
-                "TNX_MANAGER_COPYQ_START_ATTEMPTS",
-                6,
-            )?
-            .clamp(1, 100) as usize,
-            copyq_start_interval_ms: number(
-                "copyq_start_interval_ms",
-                "TNX_MANAGER_COPYQ_START_INTERVAL_MS",
-                25,
-            )?,
         })
     }
 }
@@ -801,16 +765,11 @@ fn choose_with_preview(
         data.flush()?;
     }
     let mut command = context.picker.command();
-    let with_nth = if matches!(preview_spec, Some(PreviewSpec::Blob { .. })) {
-        "4.."
-    } else {
-        "2.."
-    };
     command.args([
         "--delimiter",
         "\t",
         "--with-nth",
-        with_nth,
+        "2..",
         "--layout=reverse",
         "--info=inline",
         "--tiebreak=index",
@@ -834,11 +793,6 @@ fn choose_with_preview(
                     shell_quote(&data.path().to_string_lossy())
                 )
             }
-            PreviewSpec::Blob { path, .. } => format!(
-                "{} manage-preview --kind blob --data {} --offset {{2}} --length {{3}}",
-                shell_quote(&exe.to_string_lossy()),
-                shell_quote(&path.to_string_lossy())
-            ),
         };
         let follow = if context.picker.preview_follow {
             ":follow"
@@ -857,22 +811,7 @@ fn choose_with_preview(
     let mut child = command.spawn().context("failed to start manager fzf")?;
     if let Some(stdin) = child.stdin.as_mut() {
         for (index, row) in rows.iter().enumerate() {
-            let result = match preview_spec {
-                Some(PreviewSpec::Blob { entries, .. }) => {
-                    let (offset, length) = entries
-                        .get(index)
-                        .context("clipboard preview entry is out of range")?;
-                    writeln!(
-                        stdin,
-                        "{}\t{}\t{}\t{}",
-                        index,
-                        offset,
-                        length,
-                        sanitize(&row.display)
-                    )
-                }
-                _ => writeln!(stdin, "{}\t{}", index, sanitize(&row.display)),
-            };
+            let result = writeln!(stdin, "{}\t{}", index, sanitize(&row.display));
             if let Err(error) = result {
                 if error.kind() != ErrorKind::BrokenPipe {
                     return Err(error.into());
