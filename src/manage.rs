@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 use crate::{
-    fzf, tmux,
+    tmux,
     util::{shell_quote, version_at_least},
 };
 
@@ -68,6 +68,28 @@ struct ManagerConfig {
     menu_popup_height: String,
 }
 
+#[derive(Debug)]
+struct ManagerContext {
+    config: ManagerConfig,
+    tmux: tmux::TmuxClient,
+    picker: Picker,
+}
+
+#[derive(Clone, Debug)]
+struct Picker {
+    program: &'static str,
+    options: Vec<OsString>,
+    preview_follow: bool,
+    tmux_popup: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PickerExit {
+    Selected,
+    Cancelled,
+    Failed,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Row {
     id: String,
@@ -85,24 +107,29 @@ pub fn run(args: ManageArgs) -> Result<()> {
     ensure_program("tmux", "tmux is required for manage")?;
     ensure_program("fzf", "fzf is required for manage")?;
     let config = ManagerConfig::load()?;
+    let context = ManagerContext {
+        picker: Picker::new(&config)?,
+        tmux: tmux::TmuxClient::from_env()?,
+        config,
+    };
     let category = match args.category {
         Some(category) => category,
-        None => select_category(&config)?,
+        None => select_category(&context)?,
     };
     if category.is_empty() {
         return Ok(());
     }
     match category.as_str() {
         "history" => run_history(),
-        "copy-mode" => run_copy_mode(args.action.as_deref(), &config),
-        "session" => run_session(args.action.as_deref(), &config),
-        "window" => run_window(args.action.as_deref(), &config),
-        "pane" => run_pane(args.action.as_deref(), &config),
-        "command" => run_command(&config),
-        "keybinding" => run_keybinding(&config),
-        "clipboard" => run_clipboard(args.action.as_deref(), &config),
-        "process" => run_process(args.action.as_deref(), &config),
-        "menu" => run_menu(&config),
+        "copy-mode" => run_copy_mode(args.action.as_deref(), &context),
+        "session" => run_session(args.action.as_deref(), &context),
+        "window" => run_window(args.action.as_deref(), &context),
+        "pane" => run_pane(args.action.as_deref(), &context),
+        "command" => run_command(&context),
+        "keybinding" => run_keybinding(&context),
+        "clipboard" => run_clipboard(args.action.as_deref(), &context),
+        "process" => run_process(args.action.as_deref(), &context),
+        "menu" => run_menu(&context),
         other => anyhow::bail!("unknown manager category '{other}'"),
     }
 }
@@ -225,7 +252,49 @@ impl ManagerConfig {
     }
 }
 
-fn select_category(config: &ManagerConfig) -> Result<String> {
+impl Picker {
+    fn new(config: &ManagerConfig) -> Result<Self> {
+        let use_tmux = tmux::have("fzf-tmux") && env::var_os("TMUX").is_some();
+        let fzf_version = tmux::command_version("fzf", &["--version"]).unwrap_or_default();
+        let tmux_version = tmux::command_version("tmux", &["-V"]).unwrap_or_default();
+        let tmux_popup = version_at_least(&tmux_version, 3, 2, 0);
+        let parsed = shell_words::split(&config.fzf_options)
+            .context("failed to parse manager fzf options")?;
+        let options = if use_tmux {
+            let options = without_multi(parsed);
+            if tmux_popup && version_at_least(&fzf_version, 0, 23, 0) {
+                options
+            } else {
+                without_popup_options(options)
+            }
+        } else {
+            without_tmux_options(without_multi(parsed))
+        };
+        Ok(Self {
+            program: if use_tmux { "fzf-tmux" } else { "fzf" },
+            options: options.into_iter().map(OsString::from).collect(),
+            preview_follow: config.preview_follow && version_at_least(&fzf_version, 0, 24, 4),
+            tmux_popup,
+        })
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(self.program);
+        command.args(&self.options);
+        command
+    }
+}
+
+fn picker_exit(code: Option<i32>) -> PickerExit {
+    match code {
+        Some(0) => PickerExit::Selected,
+        Some(1) | Some(130) => PickerExit::Cancelled,
+        _ => PickerExit::Failed,
+    }
+}
+
+fn select_category(context: &ManagerContext) -> Result<String> {
+    let config = &context.config;
     let in_copy_mode =
         tmux::try_stdout(["display-message", "-p", "#{pane_in_mode}"]).as_deref() == Some("1");
     let rows: Vec<Row> = config
@@ -241,7 +310,7 @@ fn select_category(config: &ManagerConfig) -> Result<String> {
         })
         .collect();
     Ok(
-        choose(&rows, config, "manage> ", "Select a feature", false, None)?
+        choose(&rows, context, "manage> ", "Select a feature", false, None)?
             .first()
             .map(|index| rows[*index].id.clone())
             .unwrap_or_default(),
@@ -257,17 +326,18 @@ fn run_history() -> Result<()> {
     }
 }
 
-fn run_session(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
+fn run_session(action: Option<&str>, context: &ManagerContext) -> Result<()> {
+    let config = &context.config;
     let actions = ["switch", "new", "rename", "detach", "kill"];
-    let action = resolve_action(action, &actions, config, "session action> ")?;
+    let action = resolve_action(action, &actions, context, "session action> ")?;
     if action.is_empty() {
         return Ok(());
     }
     if action == "new" {
-        if let Some(name) = prompt_text(config, "new session> ", "Enter a new session name")? {
+        if let Some(name) = prompt_text(context, "new session> ", "Enter a new session name")? {
             let mut commands = vec![command(["new-session", "-d", "-s", name.as_str()])];
             commands.extend(client_switch_commands(&name));
-            tmux::TmuxClient::from_env()?.run_commands(&commands)?;
+            context.tmux.run_commands(&commands)?;
         }
         return Ok(());
     }
@@ -282,7 +352,7 @@ fn run_session(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     let multi = matches!(action.as_str(), "detach" | "kill");
     let selected = selected_rows(
         &rows,
-        config,
+        context,
         "session> ",
         if multi {
             "TAB selects multiple sessions"
@@ -295,7 +365,7 @@ fn run_session(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     if selected.is_empty() {
         return Ok(());
     }
-    let client = tmux::TmuxClient::from_env()?;
+    let client = &context.tmux;
     match action.as_str() {
         "switch" => {
             let commands = client_switch_commands(&selected[0].id);
@@ -306,7 +376,7 @@ fn run_session(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             }
         }
         "rename" => {
-            if let Some(name) = prompt_text(config, "rename session> ", "Enter a new name")? {
+            if let Some(name) = prompt_text(context, "rename session> ", "Enter a new name")? {
                 client.run([
                     "rename-session",
                     "-t",
@@ -317,7 +387,7 @@ fn run_session(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             Ok(())
         }
         "detach" => destructive_tmux(
-            config,
+            context,
             "Detach selected session client(s)?",
             selected
                 .iter()
@@ -325,7 +395,7 @@ fn run_session(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
                 .collect(),
         ),
         "kill" => destructive_tmux(
-            config,
+            context,
             "Kill selected session(s)?",
             selected
                 .iter()
@@ -336,9 +406,10 @@ fn run_session(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     }
 }
 
-fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
+fn run_window(action: Option<&str>, context: &ManagerContext) -> Result<()> {
+    let config = &context.config;
     let actions = ["switch", "link", "move", "swap", "rename", "kill"];
-    let action = resolve_action(action, &actions, config, "window action> ")?;
+    let action = resolve_action(action, &actions, context, "window action> ")?;
     if action.is_empty() {
         return Ok(());
     }
@@ -355,7 +426,7 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         });
         let selected = selected_rows(
             &rows,
-            config,
+            context,
             "source window> ",
             "Select a source window",
             false,
@@ -384,7 +455,7 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     }
     let selected = selected_rows(
         &rows,
-        config,
+        context,
         "window> ",
         if action == "kill" {
             "TAB selects multiple windows"
@@ -397,7 +468,7 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     if selected.is_empty() {
         return Ok(());
     }
-    let client = tmux::TmuxClient::from_env()?;
+    let client = &context.tmux;
     match action.as_str() {
         "switch" => {
             let (session, _) = window_target_parts(&selected[0].id)?;
@@ -406,7 +477,7 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             client.run_commands(&commands)
         }
         "rename" => {
-            if let Some(name) = prompt_text(config, "rename window> ", "Enter a new name")? {
+            if let Some(name) = prompt_text(context, "rename window> ", "Enter a new name")? {
                 client.run([
                     "rename-window",
                     "-t",
@@ -427,7 +498,7 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             });
             let other = selected_rows(
                 &rows,
-                config,
+                context,
                 "swap with> ",
                 "Select another window",
                 false,
@@ -445,7 +516,7 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             Ok(())
         }
         "kill" => destructive_tmux(
-            config,
+            context,
             "Unlink/kill selected window(s)?",
             selected
                 .iter()
@@ -456,11 +527,12 @@ fn run_window(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     }
 }
 
-fn run_pane(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
+fn run_pane(action: Option<&str>, context: &ManagerContext) -> Result<()> {
+    let config = &context.config;
     let actions = [
         "switch", "break", "join", "swap", "layout", "kill", "resize",
     ];
-    let action = resolve_action(action, &actions, config, "pane action> ")?;
+    let action = resolve_action(action, &actions, context, "pane action> ")?;
     if action.is_empty() {
         return Ok(());
     }
@@ -472,15 +544,22 @@ fn run_pane(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             "main-vertical",
             "tiled",
         ]);
-        if let Some(layout) =
-            selected_rows(&layouts, config, "layout> ", "Select a layout", false, None)?.first()
+        if let Some(layout) = selected_rows(
+            &layouts,
+            context,
+            "layout> ",
+            "Select a layout",
+            false,
+            None,
+        )?
+        .first()
         {
             tmux::run(["select-layout", layout.id.as_str()])?;
         }
         return Ok(());
     }
     if action == "resize" {
-        return resize_pane(config);
+        return resize_pane(context);
     }
     let mut panes = pane_rows(config)?;
     let current = tmux::try_stdout(["display-message", "-p", "#{pane_id}"]).unwrap_or_default();
@@ -490,7 +569,7 @@ fn run_pane(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     let multi = matches!(action.as_str(), "join" | "kill");
     let selected = selected_rows(
         &panes,
-        config,
+        context,
         "pane> ",
         if multi {
             "TAB selects multiple panes"
@@ -503,7 +582,7 @@ fn run_pane(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     if selected.is_empty() {
         return Ok(());
     }
-    let client = tmux::TmuxClient::from_env()?;
+    let client = &context.tmux;
     match action.as_str() {
         "switch" => {
             let session = tmux::stdout([
@@ -549,7 +628,7 @@ fn run_pane(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             panes.retain(|row| row.id != source);
             let other = selected_rows(
                 &panes,
-                config,
+                context,
                 "swap with> ",
                 "Select another pane",
                 false,
@@ -561,7 +640,7 @@ fn run_pane(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             Ok(())
         }
         "kill" => destructive_tmux(
-            config,
+            context,
             "Kill selected pane(s)?",
             selected
                 .iter()
@@ -572,11 +651,11 @@ fn run_pane(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     }
 }
 
-fn resize_pane(config: &ManagerConfig) -> Result<()> {
+fn resize_pane(context: &ManagerContext) -> Result<()> {
     let directions = rows(&["left", "right", "up", "down"]);
     let Some(direction) = selected_rows(
         &directions,
-        config,
+        context,
         "resize> ",
         "Select a direction",
         false,
@@ -593,7 +672,7 @@ fn resize_pane(config: &ManagerConfig) -> Result<()> {
     };
     let Some(size) = selected_rows(
         &sizes,
-        config,
+        context,
         "size> ",
         "Select cells to adjust",
         false,
@@ -612,7 +691,7 @@ fn resize_pane(config: &ManagerConfig) -> Result<()> {
     tmux::run(["resize-pane", flag, size.id.as_str()])
 }
 
-fn run_copy_mode(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
+fn run_copy_mode(action: Option<&str>, context: &ManagerContext) -> Result<()> {
     const COMMANDS: &[(&str, &str, bool)] = &[
         ("append-selection", "Append selection to clipboard", false),
         (
@@ -688,7 +767,7 @@ fn run_copy_mode(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             .collect();
         choose(
             &choices,
-            config,
+            context,
             "copy-mode> ",
             "Select a copy-mode command",
             false,
@@ -701,7 +780,7 @@ fn run_copy_mode(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         return Ok(());
     };
     if *requires_arg {
-        if let Some(value) = prompt_text(config, &format!("{name}> "), "Enter command argument")? {
+        if let Some(value) = prompt_text(context, &format!("{name}> "), "Enter command argument")? {
             tmux::run(["send-keys", "-X", name, value.as_str()])?;
         }
     } else {
@@ -710,21 +789,21 @@ fn run_copy_mode(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     Ok(())
 }
 
-fn run_command(config: &ManagerConfig) -> Result<()> {
+fn run_command(context: &ManagerContext) -> Result<()> {
     let output = tmux::stdout(["list-commands"])?;
     let rows: Vec<Row> = output
         .lines()
         .filter_map(|line| line.split_whitespace().next().map(|id| Row::new(id, line)))
         .collect();
     if let Some(row) =
-        selected_rows(&rows, config, "command> ", "Select a command", false, None)?.first()
+        selected_rows(&rows, context, "command> ", "Select a command", false, None)?.first()
     {
         tmux::run(["command-prompt", "-I", row.id.as_str()])?;
     }
     Ok(())
 }
 
-fn run_keybinding(config: &ManagerConfig) -> Result<()> {
+fn run_keybinding(context: &ManagerContext) -> Result<()> {
     let output = tmux::stdout(["list-keys"])?;
     let rows: Vec<Row> = output
         .lines()
@@ -733,7 +812,7 @@ fn run_keybinding(config: &ManagerConfig) -> Result<()> {
         .collect();
     let selected = selected_rows(
         &rows,
-        config,
+        context,
         "binding> ",
         "Select a key binding",
         false,
@@ -778,7 +857,7 @@ fn execute_binding(line: &str) -> Result<()> {
     tmux::run(parts[index..].iter().map(String::as_str))
 }
 
-fn run_clipboard(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
+fn run_clipboard(action: Option<&str>, context: &ManagerContext) -> Result<()> {
     let mut use_copyq = action != Some("buffer") && tmux::have("copyq");
     if use_copyq && copyq_count().is_err() {
         let _ = Command::new("copyq")
@@ -804,7 +883,7 @@ fn run_clipboard(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         }
         let selected = selected_rows(
             &rows,
-            config,
+            context,
             "clipboard> ",
             "TAB selects multiple clipboard entries",
             true,
@@ -812,7 +891,7 @@ fn run_clipboard(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         )?;
         for row in selected {
             let content = command_stdout_bytes("copyq", ["read", row.id.as_str()])?;
-            paste_bytes(&content)?;
+            paste_bytes(context, &content)?;
         }
     } else {
         let output = tmux::stdout([
@@ -836,7 +915,7 @@ fn run_clipboard(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
             .collect();
         let selected = selected_rows(
             &rows,
-            config,
+            context,
             "buffer> ",
             "TAB selects multiple tmux buffers",
             true,
@@ -856,16 +935,16 @@ fn copyq_count() -> Result<usize> {
         .context("CopyQ returned an invalid item count")
 }
 
-fn paste_bytes(content: &[u8]) -> Result<()> {
+fn paste_bytes(context: &ManagerContext, content: &[u8]) -> Result<()> {
     let name = format!("tnx-{}", std::process::id());
-    let client = tmux::TmuxClient::from_env()?;
+    let client = &context.tmux;
     client.run_with_input(["load-buffer", "-b", name.as_str(), "-"], content)?;
     let result = client.run(["paste-buffer", "-b", name.as_str()]);
     client.run_ignore(["delete-buffer", "-b", name.as_str()]);
     result
 }
 
-fn run_process(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
+fn run_process(action: Option<&str>, context: &ManagerContext) -> Result<()> {
     let mut actions = vec![
         "display",
         "terminate",
@@ -879,7 +958,7 @@ fn run_process(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     if tmux::have("pstree") {
         actions.insert(1, "tree");
     }
-    let action = resolve_action(action, &actions, config, "process action> ")?;
+    let action = resolve_action(action, &actions, context, "process action> ")?;
     if action.is_empty() {
         return Ok(());
     }
@@ -891,7 +970,7 @@ fn run_process(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
     let multi = !matches!(action.as_str(), "display" | "tree");
     let indexes = choose(
         &rows,
-        config,
+        context,
         "process> ",
         "Select a process; TAB selects multiple signal targets",
         multi,
@@ -901,10 +980,11 @@ fn run_process(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         return Ok(());
     }
     if action == "display" {
-        return display_process(processes[indexes[0]].pid);
+        return display_process(context, processes[indexes[0]].pid);
     }
     if action == "tree" {
         return popup_or_split(
+            context,
             &format!("pstree -p {}", processes[indexes[0]].pid),
             "70%",
             "70%",
@@ -921,7 +1001,7 @@ fn run_process(action: Option<&str>, config: &ManagerConfig) -> Result<()> {
         _ => unreachable!(),
     };
     let selected: Vec<&ProcessRow> = indexes.iter().map(|index| &processes[*index]).collect();
-    signal_processes(config, signal, &selected)
+    signal_processes(context, signal, &selected)
 }
 
 fn process_rows() -> Result<Vec<ProcessRow>> {
@@ -940,7 +1020,11 @@ fn process_rows() -> Result<Vec<ProcessRow>> {
         .collect())
 }
 
-fn signal_processes(config: &ManagerConfig, signal: &str, processes: &[&ProcessRow]) -> Result<()> {
+fn signal_processes(
+    context: &ManagerContext,
+    signal: &str,
+    processes: &[&ProcessRow],
+) -> Result<()> {
     let current_user = command_stdout("whoami", std::iter::empty::<&str>())?
         .trim()
         .to_string();
@@ -975,25 +1059,29 @@ fn signal_processes(config: &ManagerConfig, signal: &str, processes: &[&ProcessR
         }
     }
     destructive_tmux(
-        config,
+        context,
         &format!("Send {signal} to selected process(es)?"),
         commands,
     )
 }
 
-fn display_process(pid: u32) -> Result<()> {
+fn display_process(context: &ManagerContext, pid: u32) -> Result<()> {
     let command = if cfg!(target_os = "macos") {
         format!("top -pid {pid}")
     } else {
         format!("top -p {pid}")
     };
-    popup_or_split(&command, "70%", "70%")
+    popup_or_split(context, &command, "70%", "70%")
 }
 
-fn popup_or_split(command: &str, width: &str, height: &str) -> Result<()> {
-    let version = tmux::command_version("tmux", &["-V"]).unwrap_or_default();
-    if version_at_least(&version, 3, 2, 0) {
-        tmux::run([
+fn popup_or_split(
+    context: &ManagerContext,
+    command: &str,
+    width: &str,
+    height: &str,
+) -> Result<()> {
+    if context.picker.tmux_popup {
+        context.tmux.run([
             "display-popup",
             "-E",
             "-w",
@@ -1005,7 +1093,7 @@ fn popup_or_split(command: &str, width: &str, height: &str) -> Result<()> {
             command,
         ])
     } else {
-        tmux::run([
+        context.tmux.run([
             "split-window",
             "-v",
             "-l",
@@ -1017,7 +1105,8 @@ fn popup_or_split(command: &str, width: &str, height: &str) -> Result<()> {
     }
 }
 
-fn run_menu(config: &ManagerConfig) -> Result<()> {
+fn run_menu(context: &ManagerContext) -> Result<()> {
+    let config = &context.config;
     let Some(raw) = config.menu.as_deref() else {
         tmux::display_message("tmux-nexus: manager menu is not configured");
         return Ok(());
@@ -1030,7 +1119,7 @@ fn run_menu(config: &ManagerConfig) -> Result<()> {
         .collect();
     let selected = choose(
         &rows,
-        config,
+        context,
         "menu> ",
         "Select a configured command",
         false,
@@ -1181,7 +1270,7 @@ where
 fn resolve_action(
     action: Option<&str>,
     actions: &[&str],
-    config: &ManagerConfig,
+    context: &ManagerContext,
     prompt: &str,
 ) -> Result<String> {
     if let Some(action) = action {
@@ -1192,7 +1281,7 @@ fn resolve_action(
     }
     let rows = rows(actions);
     Ok(
-        choose(&rows, config, prompt, "Select an action", false, None)?
+        choose(&rows, context, prompt, "Select an action", false, None)?
             .first()
             .map(|index| rows[*index].id.clone())
             .unwrap_or_default(),
@@ -1201,13 +1290,13 @@ fn resolve_action(
 
 fn selected_rows<'a>(
     rows: &'a [Row],
-    config: &ManagerConfig,
+    context: &ManagerContext,
     prompt: &str,
     header: &str,
     multi: bool,
     preview_kind: Option<&str>,
 ) -> Result<Vec<&'a Row>> {
-    Ok(choose(rows, config, prompt, header, multi, preview_kind)?
+    Ok(choose(rows, context, prompt, header, multi, preview_kind)?
         .into_iter()
         .filter_map(|index| rows.get(index))
         .collect())
@@ -1215,7 +1304,7 @@ fn selected_rows<'a>(
 
 fn choose(
     rows: &[Row],
-    config: &ManagerConfig,
+    context: &ManagerContext,
     prompt: &str,
     header: &str,
     multi: bool,
@@ -1225,10 +1314,13 @@ fn choose(
         tmux::display_message("tmux-nexus: no manager items available");
         return Ok(Vec::new());
     }
-    let mut data = NamedTempFile::new()?;
-    serde_json::to_writer(&mut data, rows)?;
-    data.flush()?;
-    let mut command = picker_command(config)?;
+    let config = &context.config;
+    let mut data = preview_kind.map(|_| NamedTempFile::new()).transpose()?;
+    if let Some(data) = data.as_mut() {
+        serde_json::to_writer(&mut *data, rows)?;
+        data.flush()?;
+    }
+    let mut command = context.picker.command();
     command.args([
         "--delimiter",
         "\t",
@@ -1245,14 +1337,16 @@ fn choose(
     command.arg(if multi { "-m" } else { "+m" });
     if let Some(kind) = preview_kind {
         let exe = env::current_exe()?;
+        let data = data
+            .as_ref()
+            .context("manager preview data is unavailable")?;
         let preview = format!(
             "{} manage-preview --kind {} --data {} --row {{1}}",
             shell_quote(&exe.to_string_lossy()),
             shell_quote(kind),
             shell_quote(&data.path().to_string_lossy())
         );
-        let fzf_version = tmux::command_version("fzf", &["--version"]).unwrap_or_default();
-        let follow = if config.preview_follow && version_at_least(&fzf_version, 0, 24, 4) {
+        let follow = if context.picker.preview_follow {
             ":follow"
         } else {
             ""
@@ -1278,8 +1372,8 @@ fn choose(
         }
     }
     let output = child.wait_with_output()?;
-    match output.status.code() {
-        Some(0) => String::from_utf8_lossy(&output.stdout)
+    match picker_exit(output.status.code()) {
+        PickerExit::Selected => String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(|line| {
                 line.split('\t')
@@ -1289,13 +1383,13 @@ fn choose(
                     .context("fzf returned an invalid row")
             })
             .collect(),
-        Some(1) | Some(130) => Ok(Vec::new()),
-        _ => anyhow::bail!("manager fzf exited with status {}", output.status),
+        PickerExit::Cancelled => Ok(Vec::new()),
+        PickerExit::Failed => anyhow::bail!("manager fzf exited with status {}", output.status),
     }
 }
 
-fn prompt_text(config: &ManagerConfig, prompt: &str, header: &str) -> Result<Option<String>> {
-    let mut command = picker_command(config)?;
+fn prompt_text(context: &ManagerContext, prompt: &str, header: &str) -> Result<Option<String>> {
+    let mut command = context.picker.command();
     command.args([
         "+m",
         "--print-query",
@@ -1312,8 +1406,12 @@ fn prompt_text(config: &ManagerConfig, prompt: &str, header: &str) -> Result<Opt
         writeln!(stdin, "Press Enter to accept the query")?;
     }
     let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Ok(None);
+    match picker_exit(output.status.code()) {
+        PickerExit::Selected => {}
+        PickerExit::Cancelled => return Ok(None),
+        PickerExit::Failed => {
+            anyhow::bail!("manager fzf exited with status {}", output.status)
+        }
     }
     let query = String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -1322,25 +1420,6 @@ fn prompt_text(config: &ManagerConfig, prompt: &str, header: &str) -> Result<Opt
         .trim()
         .to_string();
     Ok((!query.is_empty()).then_some(query))
-}
-
-fn picker_command(config: &ManagerConfig) -> Result<Command> {
-    let use_tmux = tmux::have("fzf-tmux") && env::var_os("TMUX").is_some();
-    let mut command = Command::new(if use_tmux { "fzf-tmux" } else { "fzf" });
-    let parsed =
-        shell_words::split(&config.fzf_options).context("failed to parse manager fzf options")?;
-    let options = if use_tmux {
-        let options = without_multi(parsed);
-        if fzf::supports_popup() {
-            options
-        } else {
-            without_popup_options(options)
-        }
-    } else {
-        without_tmux_options(without_multi(parsed))
-    };
-    command.args(options);
-    Ok(command)
 }
 
 fn without_multi(options: Vec<String>) -> Vec<String> {
@@ -1429,11 +1508,12 @@ fn is_tmux_layout_value(value: &str) -> bool {
 }
 
 fn destructive_tmux(
-    config: &ManagerConfig,
+    context: &ManagerContext,
     prompt: &str,
     commands: Vec<Vec<OsString>>,
 ) -> Result<()> {
-    let client = tmux::TmuxClient::from_env()?;
+    let config = &context.config;
+    let client = &context.tmux;
     if !config.confirm {
         return client.run_commands(&commands);
     }
@@ -1599,7 +1679,8 @@ fn session_attached(session: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bool, parse_menu, without_multi, without_popup_options, without_tmux_options,
+        parse_bool, parse_menu, picker_exit, without_multi, without_popup_options,
+        without_tmux_options, PickerExit,
     };
 
     #[test]
@@ -1664,5 +1745,14 @@ mod tests {
         assert!(parse_bool("yes").unwrap());
         assert!(!parse_bool("off").unwrap());
         assert!(parse_bool("maybe").is_err());
+    }
+
+    #[test]
+    fn classifies_manager_picker_exit_codes() {
+        assert_eq!(picker_exit(Some(0)), PickerExit::Selected);
+        assert_eq!(picker_exit(Some(1)), PickerExit::Cancelled);
+        assert_eq!(picker_exit(Some(130)), PickerExit::Cancelled);
+        assert_eq!(picker_exit(Some(2)), PickerExit::Failed);
+        assert_eq!(picker_exit(None), PickerExit::Failed);
     }
 }
