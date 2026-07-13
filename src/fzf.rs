@@ -26,8 +26,9 @@ pub fn run_picker(
     config: &Config,
     index_path: &Path,
 ) -> Result<PickerResult> {
-    let mut command = picker_command();
-    let args = picker_args(config, index_path)?;
+    let extra_options = parse_fzf_options(config)?;
+    let mut command = picker_command(&extra_options);
+    let args = picker_args(config, index_path, &extra_options)?;
     command.args(args);
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
 
@@ -89,10 +90,10 @@ pub fn run_picker(
     Ok(PickerResult { action, record_ids })
 }
 
-fn picker_command() -> Command {
+fn picker_command(extra_options: &[String]) -> Command {
     if tmux::have("fzf-tmux") && std::env::var_os("TMUX").is_some() {
         let mut cmd = Command::new("fzf-tmux");
-        if supports_popup() {
+        if supports_popup() && !has_popup_options(extra_options) {
             cmd.args(["-p", "80%,60%"]);
         }
         cmd
@@ -101,7 +102,11 @@ fn picker_command() -> Command {
     }
 }
 
-fn picker_args(config: &Config, index_path: &Path) -> Result<Vec<OsString>> {
+fn picker_args(
+    config: &Config,
+    index_path: &Path,
+    extra_options: &[String],
+) -> Result<Vec<OsString>> {
     let mut args = vec![
         "--delimiter".into(),
         "\t".into(),
@@ -138,13 +143,27 @@ fn picker_args(config: &Config, index_path: &Path) -> Result<Vec<OsString>> {
         ]);
     }
 
-    if !config.fzf_options.trim().is_empty() {
-        let extra = shell_words::split(&config.fzf_options)
-            .context("failed to parse fzf_options/TNX_FZF_OPTIONS")?;
-        args.extend(extra.into_iter().map(OsString::from));
-    }
+    args.extend(extra_options.iter().map(OsString::from));
 
     Ok(args)
+}
+
+fn parse_fzf_options(config: &Config) -> Result<Vec<String>> {
+    shell_words::split(&config.fzf_options).context("failed to parse fzf_options/TNX_FZF_OPTIONS")
+}
+
+fn has_popup_options(options: &[String]) -> bool {
+    options
+        .iter()
+        .take_while(|option| option.as_str() != "--")
+        .any(|option| {
+            option == "--popup"
+                || option.starts_with("--popup=")
+                || option
+                    .strip_prefix('-')
+                    .and_then(|value| value.chars().next())
+                    .is_some_and(|flag| matches!(flag, 'p' | 'w' | 'h' | 'x' | 'y'))
+        })
 }
 
 fn display_line(index: &SearchIndex, record_id: usize) -> Option<String> {
@@ -205,7 +224,7 @@ pub(crate) fn supports_popup() -> bool {
 mod tests {
     use std::path::Path;
 
-    use super::{picker_args, picker_exit, sanitize_field, PickerExit};
+    use super::{has_popup_options, picker_args, picker_exit, sanitize_field, PickerExit};
     use crate::{
         config::Config,
         types::{ActionKind, CaseMode, Scope, SearchMode},
@@ -255,7 +274,7 @@ mod tests {
 
     #[test]
     fn picker_uses_hidden_preview_coordinates_without_seeding_query() {
-        let args = picker_args(&config(true), Path::new("/tmp/preview dir")).unwrap();
+        let args = picker_args(&config(true), Path::new("/tmp/preview dir"), &[]).unwrap();
         let args: Vec<String> = args
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -270,5 +289,19 @@ mod tests {
         assert!(preview.contains("--pane-index {2}"));
         assert!(preview.contains("--line-index {3}"));
         assert!(preview.contains("'/tmp/preview dir'"));
+    }
+
+    #[test]
+    fn detects_user_popup_layout_options() {
+        for options in [
+            vec!["-p".into(), "90%,70%".into()],
+            vec!["-w".into(), "90%".into(), "-h70%".into()],
+            vec!["--popup=90%,70%".into()],
+        ] {
+            assert!(has_popup_options(&options));
+        }
+
+        assert!(!has_popup_options(&["--ansi".into(), "--multi".into()]));
+        assert!(!has_popup_options(&["--".into(), "-p".into()]));
     }
 }
